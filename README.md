@@ -1,4 +1,4 @@
-# dispersal-fitness-consequences
+# fitness-consequences-dispersal
 
 Code files used for models and stats tests for my MBiol project, "Fitness consequences of dispersal: insights from a great tit population".
 

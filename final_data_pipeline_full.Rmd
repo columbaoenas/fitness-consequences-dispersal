@@ -1,0 +1,583 @@
+---
+title: "data_pipeline_full
+output: html_document
+---
+
+
+```{r, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+
+
+```
+
+```{r breeding data, echo = FALSE, include = FALSE}
+
+#reading full data from file
+breeding_full <- read.csv("Wytham GT BT 1960_2024 new.csv")
+
+#applying initial filters for outliers, making new columns
+breeding_base <- breeding_full %>% 
+  filter(Species == "g") %>% 
+  filter(year > 1964) %>% 
+  mutate(Prop.fledged = (Num.fledglings/Clutch.size)) %>% 
+  mutate(Mean.egg.weight = (Total.egg.weight/Num.eggs.weighed)) %>% 
+  mutate(Study.year = (year - 1964)) %>% #years from start of study: more interpretable models
+  mutate(Experiment.codes = ifelse(is.na(Experiment.codes), Experiment.codes, "No")) %>% #sets all NAs in exp.codes to No
+  dplyr::filter(Experiment.codes == "No") %>%  #keeps only "No" -- Pnums without any experiments done 
+  dplyr::select(year, Study.year, Pnum, Mother, Father, box, Section, Lay.date, April.lay.date, Hatch.date, April.hatch.date, Clutch.size, Total.egg.weight, Num.eggs.weighed, Mean.egg.weight, Num.fledglings, Prop.fledged) %>% 
+  dplyr::filter(Section %in% c("b", "c", "cp", "ex", "mp", "o", "p", "sw", "w")) %>%  #selecting sections used
+  dplyr::filter(!Num.fledglings < 0) %>% #removing negative numbers of fledglings
+  dplyr::filter(!Prop.fledged > 1) %>%  #removing proportions greater than 1 because of difference in number of eggs laid:fledglings
+  dplyr::filter(!Total.egg.weight > 50) %>%
+  dplyr::filter(!Mean.egg.weight > 3) %>%
+  dplyr::filter(!Mean.egg.weight < 0.5) %>%
+  dplyr::filter(!Clutch.size > 15) %>%
+  mutate(Pnum = toupper(Pnum)) %>% 
+  mutate(Pnum = trimws(Pnum)) %>% 
+  filter(substr(Pnum, 5,5) == "1") %>%  #taking only first breeding attempts: indicated by 5th character in Pnum
+  mutate(Mother = ifelse(Mother == "", NA, Mother)) %>% 
+  mutate(Mother = toupper(Mother)) %>% 
+  mutate(Mother = trimws(Mother)) %>% #sets blanks to NA, sets all ring numbers to upper case
+  mutate(Father = ifelse(Father == "", NA, Father)) %>% 
+  mutate(Father = toupper(Father)) %>% 
+  mutate(Father = trimws(Father)) 
+
+```
+
+
+```{r reading other files}
+#pedigree file 
+pedigree_clean <- read.csv("pedigree_clean.csv")
+#selecting only what's needed to left_join dispersal status
+pedigree_cut <- dplyr::select(pedigree_clean, bto_ring, imm_res) 
+
+```
+
+```{r ringing data}
+#most updated dataset with correct ages
+ringing_keith <- read.csv("long_term_ringing_data_new.csv") %>% 
+  rename(bto_ring = ring)
+
+ringing_keith_clean <- ringing_keith %>% 
+  filter(species == "greti") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring)) %>% 
+  mutate(month = as.numeric(substr(date_time, 4,5)))
+table(ringing_keith_clean$month, ringing_keith_clean$age)
+
+#old dataset without missing pnums
+ringing_old <- read.csv("wythamGTBT_ringingdata_1960_2024.csv")
+
+ringing_old_clean <- ringing_old %>% 
+  filter(bto_species_code == "GRETI") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring)) 
+
+
+#filtering updated dataset for only new recruits ringed at the nest
+
+ringing_keith_clean2 <- ringing_keith_clean %>% 
+  filter(age == "1") %>%
+  # filter(record_type == "Physical") %>%
+  filter(retrap %in% c("N", "New Capture")) %>%
+  filter(region %in% c("Wytham_Core", "WYT")) %>% 
+  filter(year > 1959) %>% 
+  filter(is.na(pit_tag_state) == TRUE)
+
+
+#filtering old dataset to retain just birds ringed at the nest, and the nest where they were ringed
+
+pnums <- ringing_old_clean %>%
+  filter(age <= 1) %>%
+  select(Pnum, bto_ring)
+
+
+#adding pnums to the updated dataset, to get a dataframe with chicks to be used for recruit calculations
+
+keithnestlingswithpnums <- left_join(ringing_keith_clean2, pnums, by = "bto_ring")
+
+
+# #oldest dataset that andrea gave me first
+# ringing_andrea <- read.csv("ebmp_database_ringing_record_export_GT&BT_all.csv")
+# ringing_andrea_clean <- ringing_andrea %>% 
+#   filter(bto_species_code == "GRETI") %>% 
+#   filter(age == "1")
+
+```
+
+
+```{r}
+#chicks that were ringed at the nest: fledglings at day 15 in Wytham
+chicks <- keithnestlingswithpnums %>% 
+  filter(age == "1") %>% 
+  filter(species == "greti") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring)) 
+
+```
+
+```{r breeding chicks/adults}
+###identifying breeding adults
+
+mothers <- breeding_base %>% 
+  #takes only mother ring column
+  select(Mother) %>% 
+  #makes a new column, setting all to present
+  mutate(present = "1") %>% 
+  #renames mother -> id for left_join
+  rename(id = Mother)
+#still includes NAs at this point -- just taking the entire column of bto_rings
+
+fathers <- breeding_base %>% 
+  select(Father) %>% 
+  mutate(present = "1") %>% 
+  rename(id = Father)
+
+#column with all individuals in wytham known to be parents: recruited
+adults <- rbind(mothers, fathers)
+#removing NAs, duplicates
+adults_clean <- adults %>% 
+  na.omit() %>% 
+  distinct(id, .keep_all = TRUE) 
+
+```
+
+```{r calculating number of recruits per pnum}
+
+#joining chicks ringed at the nest to the adults dataframe, marking out which chicks later bred as adults
+#contains all chicks, their ringing data, and whether they are later parents
+chicks_rec <- left_join(chicks, adults_clean, by = c("bto_ring" = "id"))
+
+#setting all NAs -- any indiv that wasn't found breeding later -- to 0: no way to differentiate 0/1 using this code
+chicks_rec <- chicks_rec %>%
+  mutate(present = if_else(is.na(present), "0", present)) #if na -> 0, else -> present(which is always 1 rn)
+#setting to integer instead of character
+chicks_rec$present <- as.numeric(chicks_rec$present)
+
+#saving for distance calculations
+# write.csv(chicks_rec, "chicks_rec_070425.csv")
+
+#making a new dataframe -- shows just Pnum and num_recruits, ready to join to breeding
+chicks_rec_pnum <- chicks_rec %>% 
+  #grouping by nest (Pnum),
+  group_by(Pnum) %>% 
+  #taking the number of recruits present in each nest (summarise(sum))
+  summarise(num_recruits = sum(present))
+
+```
+
+```{r binding recruits to breeding data}
+#binding num_recruits to breeding data
+breeding <- left_join(breeding_base, chicks_rec_pnum, by = "Pnum") %>% 
+  mutate(num_recruits = case_when(is.na(num_recruits) == TRUE ~ 0,
+                                  is.na(num_recruits) == FALSE ~ num_recruits)) %>% 
+  dplyr::select(year, Study.year, Pnum, Mother, Father, box, Section, Lay.date, April.lay.date, Hatch.date, 
+                April.hatch.date, Clutch.size, Total.egg.weight, Num.eggs.weighed, Mean.egg.weight, Num.fledglings, 
+                Prop.fledged, num_recruits) %>% 
+  clean_names() 
+#cant add euring codes here because it's many:one relationship:there are lots of ringing records/indiv so attempts get duplicated.
+#instead, do it in the age function when you pick which euring to keep
+  # #adding euring codes
+  # left_join(select(ringing_keith_clean, bto_ring, age), by = c("mother" = "bto_ring")) %>% 
+  # rename(mother_euring = age) %>% 
+  # left_join(select(ringing_keith_clean, bto_ring, age), by = c("father" = "bto_ring")) %>% 
+  # rename(father_euring = age)
+
+
+table(breeding$num_recruits, breeding$year)
+
+pedigree_dispersing <- pedigree_cut %>% 
+  mutate(imm_res = case_when(imm_res == "immigrant" ~ "dispersing",
+                             !imm_res == "immigrant" ~ imm_res)) 
+
+#assigning dispersal status for mother/father
+breeding2 <- breeding %>% 
+  #mother
+  left_join(rename(pedigree_dispersing, mother = bto_ring, disp_fem = imm_res), join_by(mother)) %>% 
+  mutate(disp_fem = case_when(is.na(mother) == TRUE ~ disp_fem, #when mother is NA, sets disp_fem to NA
+                             is.na(mother) == FALSE & is.na(disp_fem) == FALSE ~ disp_fem, #when mother known and dispersal known, keeps
+                             is.na(mother) == FALSE & is.na(disp_fem) == TRUE ~ "dispersing")) %>% #mother known but disp NA, sets to imm
+  left_join(rename(pedigree_dispersing, father = bto_ring, disp_male = imm_res), join_by(father)) %>% 
+  #father
+  mutate(disp_male = case_when(is.na(father) == TRUE ~ disp_male, 
+                             is.na(father) == FALSE & is.na(disp_male) == FALSE ~ disp_male,
+                             is.na(father) == FALSE & is.na(disp_male) == TRUE ~ "dispersing")) %>% 
+  #editing names: resident -> locally-born
+  mutate(disp_fem = case_when(disp_fem == "dispersing" ~ disp_fem,
+                              disp_fem == "resident" ~ "locally-born")) %>% 
+  mutate(disp_male = case_when(disp_male == "dispersing" ~ disp_male,
+                               disp_male == "resident" ~ "locally-born")) %>% 
+  #setting to factors
+  mutate(disp_fem = as.factor(disp_fem)) %>% 
+  mutate(disp_male = as.factor(disp_male)) %>%
+  #adding parental combination column
+  mutate(parent_disp = paste0(toupper(substr(disp_fem, 1, 1)), toupper(substr(disp_male, 1, 1)))) %>% 
+  mutate(parent_disp = case_when(str_detect(parent_disp, "NA") == T ~ NA,
+                                 str_detect(parent_disp, "NA") == F ~ parent_disp)) %>% 
+  mutate(parent_disp = as.factor(parent_disp))
+
+         
+
+#this line is no longer needed IN THIS STEP -- when I want to make female-only datasets/graphs I'll need to add this back in   
+# breeding3 <- breeding2 %>% 
+#   filter(is.na(mother) == FALSE)
+  
+breeding4 <- breeding2 %>% 
+  group_by(mother) %>% 
+  mutate(min_year_fem = min(year)) %>% 
+  filter(min_year_fem < 2016) %>% 
+  ungroup() %>% 
+  group_by(father) %>% 
+  mutate(min_year_male = min(year)) %>% 
+  filter(min_year_male < 2016) %>% 
+  ungroup() 
+
+
+table(breeding4$num_fledglings)
+
+table(breeding2$parent_disp)
+filter(breeding2, disp_fem == "locally-born" & disp_male == "dispersing")
+
+breeding4
+
+test_breed <- breeding4 %>% 
+  group_by(mother) %>% 
+  filter(!duplicated(disp_fem)) %>% 
+  select(mother, disp_fem)
+
+test <- left_join(ringing_keith_clean, test_breed, by = c("bto_ring" = "mother"))
+table(test$age, test$disp_fem)
+
+```
+
+
+```{r age function}
+#changed to not be a function, just doing raw code right now. easy to change back later + needed genericising anyway
+ring_all_gtit <- keithnestlingswithpnums %>%
+  dplyr::filter(species == "greti") %>%
+  dplyr::mutate(yr = as.integer(year)) %>%  #I think that yr has to be year
+  mutate(yr = year)
+table(ring_all_gtit$age)
+
+# just get age for those that we know for sure in ringing dataset
+# use BTO age codes
+ages <- ring_all_gtit %>%
+  #here she gets the date of birth of the birds
+  dplyr::mutate(dob = dplyr::case_when(
+        age == "0" ~ as.integer((yr - 2)),
+        age == "1" ~ yr,
+        age == "1J" ~ yr,
+        age == "3" ~ yr,
+        age == "3J" ~ yr,
+        age == "4" ~ as.integer((yr - 1)),
+        age == "5" ~ as.integer((yr - 1)),
+        age == "6" ~ as.integer((yr - 2)) #this is based on the EURING codes I shared with you
+      )
+  ) %>%
+  dplyr::group_by(bto_ring) %>%
+  dplyr::slice_min(n = 1, order_by = dob) %>% # select the row with the smallest Fem_Age  #I think that here she filters the data to retain the smallest DOB that is 
+  # keep only 1 row per individual
+  dplyr::slice_head() %>%
+  dplyr::ungroup() %>%
+  dplyr::select(bto_ring, dob, age)
+
+# merge with breeding data
+merged_age <- dplyr::left_join(breeding4, rename(ages, dob_fem = dob, age_fem = age), by = c("mother" = "bto_ring")) %>% 
+              dplyr::left_join(rename(ages, dob_male = dob, age_male = age),  by = c("father" = "bto_ring"))
+
+
+# get age at breeding attempt for those that know DOB
+
+merged_age <- merged_age %>%
+  dplyr::mutate(fem_breed_age = merged_age$year - merged_age$dob_fem) %>% #here she computes the actual age [I think]
+  dplyr::mutate(male_breed_age = merged_age$year - merged_age$dob_male)
+
+
+table(merged_age$fem_breed_age)
+# check and sort for any that are definitely wrong - less than 1 or more than 10, Inf (stand in for unknown) or NA
+false_agefem <- subset(merged_age, fem_breed_age < 1 | fem_breed_age > 10 | is.na(fem_breed_age) == TRUE )$mother 
+
+false_agemale <- subset(merged_age, male_breed_age < 1 | male_breed_age > 10 | is.na(male_breed_age) == TRUE )$father
+
+
+#adding true age column for individuals not found in falseage_fem
+merged_age <- merged_age %>% 
+  mutate(wrong_age_fem  = case_when(mother %in% false_agefem ~ "T",
+                                !mother %in% false_agefem ~ "F"))
+merged_age <- merged_age %>% 
+  mutate(wrong_age_male  = case_when(father %in% false_agemale ~ "T",
+                                !father %in% false_agemale ~ "F"))
+
+filter(merged_age, is.na(mother) == T & wrong_age_fem == F)
+
+# various reasons why missing - some mistakes in data
+# find these ones earliest breeding year and make their guess of DOB be 1 year before that
+# assume that when first recorded breeding it is their 1st year actually breeding
+# because usually don't move far to breed would likely have been recorded if they did nest
+# in a box before
+
+if (length(false_agefem) > 0) {
+  for (individual in subset(false_agefem, is.na(false_agefem) == FALSE)) {
+# subset mother that has false age, so exclude NA mothers, and find earliest breeding_year recorded and replace Fem_DOB with that
+    # sub <- filter(merged, (is.na(mother) == FALSE) & (mother == "608380"))
+    sub <- merged_age[is.na(merged_age$mother) == FALSE & merged_age$mother == individual, ]
+    
+    merged_age$dob_fem[is.na(merged_age$mother) == FALSE & merged_age$mother == individual] <- rep(min(sub$year) - 1, nrow(sub))
+  }
+}
+
+#repeat for males
+
+if (length(false_agemale) > 0) {
+  for (individual in subset(false_agemale, is.na(false_agemale) == FALSE)) {
+# subset mother that has false age, so exclude NA mothers, and find earliest breeding_year recorded and replace Fem_DOB with that
+    # sub <- filter(merged, (is.na(mother) == FALSE) & (mother == "608380"))
+    sub <- merged_age[is.na(merged_age$father) == FALSE & merged_age$father == individual, ]
+    
+    merged_age$dob_male[is.na(merged_age$father) == FALSE & merged_age$father == individual] <- rep(min(sub$year) - 1, nrow(sub))
+  }
+}
+
+merged_age1 <- merged_age %>%
+  dplyr::mutate(fem_breed_age = year - dob_fem) %>% 
+  dplyr::mutate(male_breed_age = year - dob_male)
+table(merged_age1$disp_fem, merged_age1$wrong_age_fem)
+
+#removing attempts where both parents are unknown
+breeding5 <- merged_age1 %>% 
+  filter(!(is.na(mother) & is.na(father)))
+
+#   dplyr::mutate(fem_breed_age = year - dob_fem) %>% 
+#   select(everything(), age_fem)
+
+
+
+# filter(breeding5, is.na(age_male) == T)
+# filter(merged_age, !(is.na(mother) & is.na(father)))
+
+#only NAs remaining are where we don't know the mother
+filter(breeding5, is.na(dob_male))
+
+```
+
+
+```{r indiv data}
+lifetime_breed_fem <- breeding5 %>% 
+  select(mother, everything()) %>% 
+  # filter(is.na(mother) == FALSE) %>% 
+  group_by(mother) %>% 
+  mutate(sex = "F",
+         lifetime_recruits = sum(num_recruits),
+         lifetime_fledglings = sum(num_fledglings),
+         num_attempts = length(mother)) %>%  
+  ungroup() %>% 
+  distinct(mother, .keep_all = TRUE) %>%
+  select(mother, year, study_year, sex, disp_fem, num_attempts, lifetime_fledglings, lifetime_recruits, 
+         min_year_fem, dob_fem, wrong_age_fem) %>% 
+  rename(bto_ring = mother, disp = disp_fem, min_year = min_year_fem, dob = dob_fem, wrong_age = wrong_age_fem) %>% 
+  filter(is.na(bto_ring) == FALSE)
+
+  filter(lifetime_breed_fem, is.na(bto_ring) == FALSE)
+
+
+lifetime_breed_male <- breeding5 %>% 
+  select(father, everything()) %>% 
+  # filter(is.na(mother) == FALSE) %>% 
+  group_by(father) %>% 
+  mutate(sex = "M",
+         lifetime_recruits = sum(num_recruits),
+         lifetime_fledglings = sum(num_fledglings),
+         num_attempts = length(father)) %>%  
+  ungroup() %>% 
+  distinct(father, .keep_all = TRUE) %>%
+  select(father, year, study_year, sex, disp_male, num_attempts, lifetime_fledglings, lifetime_recruits, 
+         min_year_male, dob_male, wrong_age_male) %>% 
+  rename(bto_ring = father, disp = disp_male, min_year = min_year_male, dob = dob_male, wrong_age = wrong_age_male) %>% 
+  filter(is.na(bto_ring) == FALSE)
+
+
+# cosa<-breeding5 %>% 
+#   group_by(year) %>% 
+#   mutate(minld=min(april_lay_date, na.rm=TRUE)) %>% 
+#   ungroup() %>% 
+#   mutate(minld30=minld+30) %>% 
+#   filter(april_lay_date<=minld30)
+# 
+# test <- breeding5 %>% 
+#   mutate(yearmother = paste0(year, mother)) %>% 
+#   mutate(yearfather = paste0(year, father))
+# 
+# test2 <- test %>% 
+#   group_by(yearmother) %>% 
+#   mutate(countyrmother = length(yearmother)) %>% 
+#   ungroup() %>% 
+#   group_by(yearfather) %>% 
+#   mutate(countyrfather = length(yearfather))
+# 
+# 
+# table(filter(test2, countyrmother==2 & is.na(mother)==FALSE)$disp_fem)
+# table(filter(test2, countyrfather==2 & is.na(father)==FALSE)$disp_male)
+# 
+# length(unique(test$yearmother))
+# length(unique(test$mother))
+
+```
+
+```{r adding age columns to lifetime}
+#FEMALES 
+
+## first age
+lifetime_breed_fem$first_age <- as.double(NA)
+
+for (individual in lifetime_breed_fem$bto_ring) {
+  lifetime_breed_fem$first_age[lifetime_breed_fem$bto_ring == individual] <- min(filter(breeding5, mother == individual)$fem_breed_age)
+}
+
+
+## last age
+lifetime_breed_fem$last_age <- as.double(NA)
+
+for (individual in lifetime_breed_fem$bto_ring) {
+  lifetime_breed_fem$last_age[lifetime_breed_fem$bto_ring == individual] <- max(filter(breeding5, mother == individual)$fem_breed_age)
+}
+
+
+## interval between first + last age
+lifetime_breed_fem$interval <- as.double(NA)
+
+for (individual in lifetime_breed_fem$bto_ring) {
+  lifetime_breed_fem$interval[lifetime_breed_fem$bto_ring == individual] <- max(filter(breeding5, mother == individual)$fem_breed_age) -  
+                                                                    min(filter(breeding5, mother == individual)$fem_breed_age)
+}
+
+
+#MALES
+
+## first age
+lifetime_breed_male$first_age <- as.double(NA)
+
+for (individual in lifetime_breed_male$bto_ring) {
+  lifetime_breed_male$first_age[lifetime_breed_male$bto_ring == individual] <- min(filter(breeding5, father == individual)$male_breed_age)
+}
+
+
+## last age
+lifetime_breed_male$last_age <- as.double(NA)
+
+for (individual in lifetime_breed_male$bto_ring) {
+  lifetime_breed_male$last_age[lifetime_breed_male$bto_ring == individual] <- max(filter(breeding5, father == individual)$male_breed_age)
+}
+
+
+## interval between first + last age
+lifetime_breed_male$interval <- as.double(NA)
+
+for (individual in lifetime_breed_male$bto_ring) {
+  lifetime_breed_male$interval[lifetime_breed_male$bto_ring == individual] <- 
+    max(filter(breeding5, father == individual)$male_breed_age) - 
+    min(filter(breeding5, father == individual)$male_breed_age)
+}
+
+
+
+```
+
+```{r binding male female and testing}
+lifetime_breed <- lifetime_breed_fem %>% 
+  rbind(lifetime_breed_male)
+
+
+### testing that mothers have been retained in the right places for   
+# table(breeding$min_year)
+# table(lifetime_breed$min_year)
+# 
+# 
+# test <- breeding %>% 
+#   distinct(mother, .keep_all = T)
+# table(test$min_year)
+# table(lifetime_breed$min_year)
+
+
+#breeding attempt
+length(unique(breeding4$mother))
+#lifetime
+length(unique(filter(lifetime_breed, sex == "F")$bto_ring))
+
+#breeding attempt
+length(unique(breeding4$father))
+#lifetime
+length(unique(filter(lifetime_breed, sex == "M")$bto_ring))
+
+
+# filter(breeding, !mother %in% lifetime_breed$mother & is.na(mother) == F)
+
+# table(lifetime_breed$lifetime_fledglings, lifetime_breed$lifetime_recruits)
+
+# unique(filter(breeding5, is.na(father) == F))
+
+```
+
+
+
+```{r proportion of immigrants test}
+# pop_imm <- data.frame(year = c(1965:2015)) 
+# for (x in pop_imm$year) {
+#   pop_imm$prop_imm[pop_imm$year == x] <- nrow(filter(breeding_cutoff, year == x & imm_res == "immigrant")) / 
+#                           nrow(filter(breeding, year == x))
+# }
+# 
+
+```
+
+```{r}
+# 
+# table(lifetime_breed$num_attempts, lifetime_breed$min_year)
+# 
+# 
+# filter(lifetime_breed, is.na(lifetime_recruits))
+# filter(breeding4, mother == "BA42682")
+
+```
+
+```{r}
+#last bits of filtering by year to make sure the right data is there
+
+#this needs to be the dataset actually used in analyses -- want to retain only full years, but it's important to see full number of recruits from individuals born before 2016 in lifetime data
+breeding_cutoff <- breeding5 %>% 
+  filter(year < 2016)
+
+table(breeding_cutoff$num_recruits, breeding_cutoff$year)
+
+```
+
+
+
+```{r}
+write.csv(breeding5, "breeding_both_final.csv")
+write.csv(breeding_cutoff, "breeding_both_cutoff_final.csv")
+
+write.csv(lifetime_breed, "lifetime_both_final.csv")
+
+```
+
+

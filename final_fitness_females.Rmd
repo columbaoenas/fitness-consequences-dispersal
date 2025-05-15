@@ -1,0 +1,410 @@
+---
+title: "Updated Fitness Females"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for females before 2016
+breeding_fem <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X) 
+
+lifetime_fem <- read.csv("lifetime_both_final.csv") %>% 
+  select(everything(), -X) %>% 
+  filter(sex == "F")
+
+breeding_fem
+mean(breeding_fem$num_fledglings)
+sd(breeding_fem$num_fledglings)
+
+test <- lifetime_fem %>% 
+  group_by(year) %>% 
+  summarise(disp)
+
+test_counts <- data.frame(year = unique(test$year),
+                          prop = c(0))
+x <- 2015
+
+test_counts <- dplyr::count(test, disp) %>% 
+  pivot_wider(names_from = disp, values_from = n)
+colnames(test_counts) <- c("year", "dispersing", "locally_born")
+test_counts <- test_counts %>% 
+  mutate(count = dispersing + locally_born) %>% 
+  mutate(prop = dispersing/count)
+
+sum(test_counts$count, na.rm=T)
+summary(test_counts$prop)
+sd(test_counts$prop, na.rm=T)
+
+lifetime <- read.csv("lifetime_both_final.csv") %>% 
+  select(everything(), -X) 
+
+table(lifetime$disp)
+test2 <- lifetime %>% 
+  group_by(year) %>% 
+  summarise(disp)
+test_counts2 <- dplyr::count(test2, disp) %>% 
+  pivot_wider(names_from = disp, values_from = n)
+colnames(test_counts2) <- c("year", "dispersing", "locally_born")
+test_counts2 <- test_counts2 %>% 
+  mutate(count = dispersing + locally_born) %>% 
+  mutate(prop = dispersing/count)
+sum(test_counts2$count, na.rm=TRUE)
+summary(test_counts2$prop)
+
+```
+
+
+
+
+### Breeding attempt traits -- effect of mothers' dispersal status
+
+#### Lay date
+```{r, echo = FALSE}
+imm_laydate_fem <- lmer(april_lay_date ~ disp_fem + (1|study_year) + (1|box)  + (1|mother), 
+                        data = breeding_fem)
+summary(imm_laydate_fem)
+
+emmeans(imm_laydate_fem, specs = "disp_fem", type = "response")
+
+
+```
+
+
+
+#### Hatch date
+
+```{r, echo = FALSE}
+imm_hatchdate_fem <- lmer(april_hatch_date ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                          data = breeding_fem)
+summary(imm_hatchdate_fem)
+
+emmeans(imm_hatchdate_fem, specs = "disp_fem", type = "response")
+
+
+```
+
+
+
+#### Clutch size
+
+```{r, echo = FALSE}
+imm_clutchsize_fem <- glmer(clutch_size ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                           data = breeding_fem, 
+                           family = "poisson")
+summary(imm_clutchsize_fem)
+
+emmeans(imm_clutchsize_fem, specs = "disp_fem", type = "response")
+
+
+```
+
+
+
+#### Mean egg weight
+
+```{r, echo = FALSE}
+imm_eggweight_fem <- lmer(mean_egg_weight ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                          data = breeding_fem)
+summary(imm_eggweight_fem)
+## Warning: Model failed to converge with max|grad| = 0.0027882 (tol = 0.002, component 1)
+
+emmeans(imm_eggweight_fem, specs = "disp_fem", type = "response")
+
+
+plot(predict_response(imm_eggweight_fem, terms = "disp_fem"))
+
+
+
+```
+
+
+
+#### Proportion of eggs fledged
+
+```{r, echo = FALSE}
+imm_fledged_fem <- glmer(prop_fledged ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem)
+
+emmeans(imm_fledged_fem, specs = "disp_fem", type = "response")
+
+
+plot(predict_response(imm_fledged_fem, terms = c("disp_fem")))
+
+```
+
+
+
+#### Number of fledglings
+
+```{r, echo = FALSE}
+imm_fledglings_fem <- glmmTMB(num_fledglings ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                              data = breeding_fem,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem)
+
+emmeans(imm_fledglings_fem, specs = "disp_fem", type = "response")
+
+
+plot(predict_response(imm_fledglings_fem, terms = "disp_fem"))
+
+```
+
+
+
+
+#### Number of recruits
+
+```{r, echo = FALSE}
+imm_recruits_fem <- glmer(num_recruits ~ disp_fem + (1|study_year) + (1|box) + (1|mother), 
+                         data = filter(breeding_fem, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem)
+
+emmeans(imm_recruits_fem, specs = "disp_fem", type = "response")
+
+
+plot(predict_response(imm_recruits_fem, terms = "disp_fem"))
+
+```
+
+
+
+### Individual-level traits -- effect of mothers' dispersal status
+
+#### Age of disappearance (reproductive lifespan)
+
+```{r, echo = FALSE}
+imm_age_fem <- lmer(last_age ~ disp + (1|dob), 
+                         data = lifetime_fem)
+summary(imm_age_fem)
+
+emmeans(imm_age_fem, specs = "disp", type = "response")
+
+
+plot(predict_response(imm_age_fem, terms = "disp"))
+
+table(breeding_fem$disp_fem, breeding_fem$fem_breed_age) 
+table(breeding_fem$disp_male, breeding_fem$male_breed_age)
+
+```
+
+
+#### Age of appearance (first breeding age)
+
+```{r, echo = FALSE}
+imm_firstage_fem <- lmer(first_age ~ disp + (1|dob) , 
+                         data = lifetime_fem)
+summary(imm_firstage_fem)
+### boundary (singular) fit: see help('isSingular')
+
+emmeans(imm_firstage_fem, specs = "disp", type = "response")
+
+
+plot(predict_response(imm_firstage_fem, terms = "disp"))
+
+```
+
+#### Number of breeding attempts
+
+```{r, echo = FALSE}
+imm_numattempts_fem <- lmer(num_attempts ~ disp + (1|dob), 
+                         data = lifetime_fem)
+summary(imm_numattempts_fem)
+
+emmeans(imm_numattempts_fem, specs = "disp", type = "response")
+
+
+plot(predict_response(imm_numattempts_fem, temrs = "disp"))
+
+### boundary (singular) fit: see help('isSingular')
+
+```
+
+#### Interval between first and last appearance
+
+```{r, echo = FALSE}
+imm_interval_fem <- lmer(interval ~ disp + (1|dob), 
+                         data = lifetime_fem)
+summary(imm_interval_fem)
+
+emmeans(imm_interval_fem, specs = "disp", type = "response")
+
+
+```
+
+
+#### Lifetime number of recruits -- lifetime reproductive success
+
+##### No fixed effect (only date of birth)
+
+```{r}
+imm_lrs_fem <- glmer(lifetime_recruits ~ disp + (1|dob), 
+                         data = lifetime_fem,
+                         family = poisson(link = "log"))
+summary(imm_lrs_fem)
+
+emmeans(imm_lrs_fem, specs = "disp", type = "response")
+
+```
+
+##### Number of attempts as fixed effect
+
+```{r}
+imm_lrs_fem_numattempts <- glmer(lifetime_recruits ~ disp + (1|dob) + (1|num_attempts), 
+                         data = lifetime_fem,
+                         family = poisson(link = "log"))
+summary(imm_lrs_fem_numattempts)
+
+emmeans(imm_lrs_fem_numattempts, specs = "disp", type = "response")
+
+
+```
+
+
+#### Lifetime number of fledglings -- lifetime reproductive success
+
+```{r, echo = FALSE}
+imm_lrsfledge_fem <- glmmTMB(lifetime_fledglings ~ disp + (1|dob),
+                              data = lifetime_fem,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_lrsfledge_fem)
+
+emmeans(imm_lrsfledge_fem, specs = "disp", type = "response")
+
+
+imm_lrsfledge_fem_lastage <- glmmTMB(lifetime_fledglings ~ disp + (1|last_age) + (1|dob),
+                              data = lifetime_fem,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_lrsfledge_fem_lastage)
+
+emmeans(imm_lrsfledge_fem_lastage, specs = "disp", type = "response")
+
+
+```
+
+
+
+## Testing if effects dissipate over time
+
+```{r adding attempt number to breeding_fem}
+breeding_time <- breeding_fem %>% 
+  group_by(mother) %>% 
+  mutate(att_num_fem = seq_along(mother)) %>% 
+  ungroup() %>% 
+  mutate(att_num_fem = case_when(is.na(mother) == T ~ NA,
+                                 is.na(mother) == F ~ att_num_fem)) %>% 
+  mutate(att_num_fem_bin = case_when(att_num_fem == 1 ~ att_num_fem,
+                                     att_num_fem > 1 ~ 2)) %>% 
+  mutate(att_num_fem = as.factor(att_num_fem),
+         att_num_fem_bin = as.factor(att_num_fem_bin)) %>% 
+    group_by(father) %>% 
+  mutate(att_num_male = seq_along(father)) %>% 
+  ungroup() %>% 
+  mutate(att_num_male = case_when(is.na(father) == T ~ NA,
+                                  is.na(father) == F ~ att_num_male)) %>% 
+  mutate(att_num_male_bin = case_when(att_num_male == 1 ~ att_num_male,
+                                     att_num_male > 1 ~ 2)) %>% 
+  mutate(att_num_male = as.factor(att_num_male),
+         att_num_male_bin = as.factor(att_num_male_bin))
+
+filter(breeding_time, mother == "BA64007")
+
+
+###NUMBERS ARE SLIGHTLY OFF, PLS FIX LATER
+
+filter(breeding_time, is.na(att_num_male))
+
+```
+
+
+##### Using normal model structure
+
+```{r, echo = FALSE}
+imm_recruits_fem_time <- glmer(num_recruits ~ disp_fem*att_num_fem + (1|study_year) + (1|box) + (1|mother), 
+                         data = filter(breeding_time, !att_num_fem == 7),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem_time)
+
+emmeans(imm_recruits_fem_time, specs = c("disp_fem", "att_num_fem"), type = "response")
+
+pairs(
+  emmeans(imm_recruits_fem_time, specs = c("disp_fem", "att_num_fem")),
+  adjust = "tukey"
+)
+
+
+plot(predict_response(imm_recruits_fem_time, terms = c("disp_fem", "att_num_fem")))
+
+
+```
+
+##### FEMALE: binary
+
+```{r, echo = FALSE}
+imm_recruits_fem_time_bin <- glmer(num_recruits ~ disp_fem*att_num_fem_bin + (1|study_year) + (1|box) + (1|mother), 
+                         data = filter(breeding_time, is.na(mother) == F),
+                         family = poisson)
+summary(imm_recruits_fem_time_bin)
+
+emmeans(imm_recruits_fem_time_bin, specs = c("disp_fem", "att_num_fem_bin"), type = "response")
+
+pairs(
+  emmeans(imm_recruits_fem_time_bin, specs = c("disp_fem", "att_num_fem_bin")),
+  adjust = "tukey"
+)
+
+
+plot(predict_response(imm_recruits_fem_time_bin, terms = c("disp_fem", "att_num_fem_bin")))
+
+
+imm_recruits_fem_time_bin2 <- glmer(num_recruits ~ disp_fem+att_num_fem_bin + (1|study_year) + (1|box) + (1|mother), 
+                         data = filter(breeding_time, is.na(mother) == F),
+                         family = poisson)
+summary(imm_recruits_fem_time_bin2)
+pairs(
+  emmeans(imm_recruits_fem_time_bin2, specs = c("disp_fem", "att_num_fem_bin")),
+  adjust = "tukey"
+)
+  emmeans(imm_recruits_fem_time_bin2, specs = c("disp_fem", "att_num_fem_bin"), type = "response")
+
+```
+
+
+

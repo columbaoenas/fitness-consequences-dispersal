@@ -1,0 +1,754 @@
+---
+title: "Spatial Fitness Effects -- Females"
+output: html_document
+---
+
+Goal: produce fitness models relating each of the spatial characteristics of nestboxes to each fitness characteristic, to see if they change the effect of dispersal status on fitness when taken into account.
+
+Models for: 
+
+- altitude
+- edge distance
+- number of oak trees within 75m 
+- nestbox popularity index
+
+
+All models will use attempt level data only -- lifetime is going to be harder to deal with spatially because of moving around the woods. Could be interesting to see if fitness differs within individuals in different areas, but would have to control for age (attempt number)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("geosphere")
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("datawizard")
+install_if_needed("lmerTest")
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for females before 2016
+breeding_fem <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X)
+
+```
+
+
+```{r spatial data}
+#environmental conditions for every nestbox in wytham
+habitat <- read.csv("Nest_box_habitat_data.csv") %>% 
+  mutate(nb = trimws(nb)) %>% 
+  mutate(nb = toupper(nb))
+
+#number of oaks within 75m of every nestbox in wytham
+oaks <- read.csv("oaks_75m.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) %>% 
+  rename(oaks = no_trees_75m)
+  
+#reading nestboxes data
+nestboxes_full <- read.csv("known_nestboxes_x_y.csv") %>% 
+  clean_names
+#needs cleaning to select only needed columns and sections + fix formatting issues
+nestboxes <- nestboxes_full %>% 
+  dplyr::select(nestbox, section, number, longitude, latitude) %>% 
+  filter(section %in% c("b", "c", "cp", "ex", "mp", "o", "sw", "w", "p")) 
+nestboxes$nestbox <- toupper(nestboxes$nestbox)
+#every name has a space :)
+nestboxes$nestbox <- str_replace_all(nestboxes$nestbox, " ", "")
+
+wytham_line <- readRDS("wood.outline.rds") %>% 
+  st_transform(crs = 4326)
+
+elevation <- read.csv("Nestbox_elevations.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) 
+
+
+```
+
+```{r pop index start, echo = FALSE}
+nestboxes_edit <- nestboxes %>% 
+  mutate(count_nearby = 0)
+
+#for each box, find distance to all other boxes, and count <= 30m
+for (i in 1:nrow(nestboxes_edit)) {
+  #take coordinates for box of interest
+  box_coords <- c(nestboxes_edit$longitude[i], nestboxes_edit$latitude[i])
+ 
+  #calculate distances to all other boxes
+  distances <- distHaversine(matrix(c(nestboxes_edit$longitude, nestboxes_edit$latitude), ncol=2), box_coords)
+ 
+  #count within 30m -- correcting for self (distance always 0)
+  nestboxes_edit$count_nearby[i] <- sum(distances <= 30) - 1
+}
+
+```
+
+```{r calculating occupancy, echo = FALSE}
+used_boxes <- select(nestboxes, nestbox)
+for (i in 1:51) {
+  used_boxes <- used_boxes %>% 
+    mutate(year = case_when((nestbox %in% filter(breeding_fem, year == 1964 + i)$box) ~ 1,
+                            !(nestbox %in% filter(breeding_fem, year == 1964 + i)$box) ~ 0)) %>% 
+    rename_with(~as.character(1964 + i),
+                starts_with("year"))
+}
+
+used_boxes$occupancy <- 0
+
+for (x in used_boxes$nestbox) {
+  used_boxes$occupancy[used_boxes$nestbox == x] <- sum(used_boxes[used_boxes$nestbox == x, 2:52])
+}
+
+nestboxes_edit <- nestboxes_edit %>% 
+  left_join(select(used_boxes, nestbox, occupancy), by = "nestbox") 
+
+```
+
+
+```{r nestbox popularity index, echo = FALSE}
+popularity_model <- lm(occupancy ~ count_nearby, data = nestboxes_edit)
+summary(popularity_model)
+# residuals(popularity_model)
+plot(predict_response(popularity_model, terms = "count_nearby"))
+
+
+ggplot(data = nestboxes_edit) + 
+  geom_point(aes(x = count_nearby, y = occupancy)) + 
+  geom_smooth(aes(x = count_nearby, y = occupancy), method = "glm")
+##
+# filter(nestboxes_edit, occupancy == 0)
+
+nestboxes_edit$popularity_index <- residuals(popularity_model)
+
+hist(residuals(popularity_model), breaks = 300)
+
+```
+
+
+```{r merging spatial data to breeding}
+breeding_fem_habitat <- breeding_fem %>% 
+  #adding altitude 
+  left_join(select(elevation, box, elevation), by = "box") %>%
+  rename(altitude_m = elevation) %>% 
+  #adding edge distance
+  left_join(select(habitat, nb, edge_EDI), by = c("box" = "nb")) %>%
+  #adding number of trees within 75m
+  left_join(oaks, by = "box") %>% 
+  #adding latitude/longitude
+  left_join(select(nestboxes, nestbox, longitude, latitude), by = c("box" = "nestbox")) %>% 
+  #adding pop index
+  left_join(select(nestboxes_edit, nestbox, occupancy, popularity_index), by = c("box" = "nestbox"))
+
+
+```
+
+
+## Lay date
+
+### No spatial effect
+
+```{r lay date}
+imm_laydate_fem <- lmer(april_lay_date ~ disp_fem + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_laydate_fem)
+
+plot(predict_response(imm_laydate_fem, terms = c("disp_fem")))
+
+
+
+```
+
+
+### Altitude
+
+```{r lay date - altitude}
+imm_laydate_fem_alt1 <- lmer(april_lay_date ~ disp_fem + altitude_m + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_laydate_fem_alt1)
+
+
+plot(predict_response(imm_laydate_fem_alt1, terms = c("disp_fem", "altitude_m")))
+
+
+# ggplot(data = breeding5) + 
+#   geom_histogram(aes(x = altitude_m))
+# hist(breeding_fem_habitat$altitude_m)
+```
+
+
+
+
+### Edge distance index
+
+```{r lay date - edge}
+imm_laydate_fem_edi1 <- lmer(april_lay_date ~ disp_fem + edge_EDI + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_laydate_fem_edi1)
+
+
+plot(predict_response(imm_laydate_fem_edi1, terms = c("disp_fem", "edge_EDI")))
+
+
+```
+
+
+
+### Number of oaks
+
+```{r lay date - oaks}
+imm_laydate_fem_oaks1 <- lmer(april_lay_date ~ disp_fem + oaks + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_laydate_fem_oaks1)
+
+
+plot(predict_response(imm_laydate_fem_oaks1, terms = c("disp_fem", "oaks")))
+
+```
+
+
+
+### Nestbox popularity
+
+```{r lay date - pop}
+imm_laydate_fem_pop1 <- lmer(april_lay_date ~ disp_fem + popularity_index + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_laydate_fem_pop1)
+
+
+
+plot(predict_response(imm_laydate_fem_pop1, terms = c("disp_fem", "popularity_index")))
+
+```
+
+
+
+## Hatch date
+
+### No spatial effect
+
+```{r hatch date }
+imm_hatchdate_fem1 <- lmer(april_hatch_date ~ disp_fem + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_hatchdate_fem1)
+
+
+plot(predict_response(imm_hatchdate_fem1, terms = c("disp_fem")))
+
+
+```
+
+
+### Altitude 
+
+```{r hatch date - altitude}
+imm_hatchdate_fem_alt1 <- lmer(april_hatch_date ~ disp_fem + altitude_m +  (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_hatchdate_fem_alt1)
+
+plot(predict_response(imm_hatchdate_fem_alt1, terms = c("disp_fem", "altitude_m")))
+
+
+```
+
+### Edge distance index
+
+```{r hatch date - edi}
+imm_hatchdate_fem_edi1 <- lmer(april_hatch_date ~ disp_fem + edge_EDI +  (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_hatchdate_fem_edi1)
+
+plot(predict_response(imm_hatchdate_fem_edi1, terms = c("disp_fem", "edge_EDI")))
+
+
+```
+
+
+### Number of oaks
+
+```{r hatch date - oaks}
+imm_hatchdate_fem_oaks1 <- lmer(april_hatch_date ~ disp_fem + oaks +  (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_hatchdate_fem_oaks1)
+
+
+plot(predict_response(imm_hatchdate_fem_oaks1, terms = c("disp_fem", "oaks")))
+
+
+```
+
+### Nestbox popularity index
+
+```{r hatch data - pop}
+imm_hatchdate_fem_pop1 <- lmer(april_hatch_date ~ disp_fem + popularity_index +  (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_hatchdate_fem_pop1)
+
+
+
+plot(predict_response(imm_hatchdate_fem_pop1, terms = c("disp_fem", "popularity_index")))
+
+
+```
+
+
+## Clutch size
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_clutchsize_fem <- glmer(clutch_size ~ disp_fem + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_fem)
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_clutchsize_fem_alt1 <- glmer(clutch_size ~ disp_fem + altitude_m + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_fem_alt1)
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_clutchsize_fem_edi1 <- glmer(clutch_size ~ disp_fem + edge_EDI + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_fem_edi1)
+
+
+```
+
+
+### Number of oaks
+
+```{r, echo = FALSE}
+imm_clutchsize_fem_oaks1 <- glmer(clutch_size ~ disp_fem + oaks + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_fem_oaks1)
+
+
+```
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_clutchsize_fem_pop1 <- glmer(clutch_size ~ disp_fem + popularity_index + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_fem_pop1)
+
+
+```
+
+
+## Mean egg weight
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_eggweight_fem <- lmer(mean_egg_weight ~ disp_fem + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_eggweight_fem)
+
+plot(predict_response(imm_eggweight_fem, terms = "disp_fem"))
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_eggweight_fem_alt1 <- lmer(mean_egg_weight ~ disp_fem + altitude_m + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_eggweight_fem_alt1)
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_eggweight_fem_edi1 <- lmer(mean_egg_weight ~ disp_fem + edge_EDI + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_eggweight_fem_edi1)
+
+
+```
+
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_eggweight_fem_oaks1 <- lmer(mean_egg_weight ~ disp_fem + oaks + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_eggweight_fem_oaks1)
+
+
+```
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_eggweight_fem_pop1 <- lmer(mean_egg_weight ~ disp_fem + popularity_index + (1|study_year) + (1|mother), 
+                          data = breeding_fem_habitat)
+summary(imm_eggweight_fem_pop1)
+
+
+```
+
+
+## Proportion of eggs fledged
+
+```{r, echo = FALSE}
+imm_fledged_fem <- glmer(prop_fledged ~ disp_fem + (1|study_year) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem)
+
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_fledged_fem_alt1 <- glmer(prop_fledged ~ disp_fem + altitude_m + (1|study_year) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem_alt1)
+
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_fledged_fem_edi1 <- glmer(prop_fledged ~ disp_fem + edge_EDI + (1|study_year) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem_edi1)
+
+
+```
+
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_fledged_fem_oaks1 <- glmer(prop_fledged ~ disp_fem + oaks + (1|study_year) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem_oaks1)
+
+
+plot(predict_response(imm_fledged_fem_oaks1, terms = c("disp_fem", "oaks")))
+
+
+```
+
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_fledged_fem_pop1 <- glmer(prop_fledged ~ disp_fem + popularity_index + (1|study_year) + (1|mother), 
+                         weights = clutch_size,
+                         data = breeding_fem_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_fem_pop1)
+
+
+```
+
+
+## Number of fledglings
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_fledglings_fem <- glmmTMB(num_fledglings ~ disp_fem + (1|mother) + (1|study_year), 
+                              data = breeding_fem_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem)
+
+
+plot(predict_response(imm_fledglings_fem, terms = c("disp_fem")))
+
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_fledglings_fem_alt1 <- glmmTMB(num_fledglings ~ disp_fem + scale(altitude_m) + (1|mother) + (1|study_year), 
+                              data = breeding_fem_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem_alt1)
+
+plot(predict_response(imm_fledglings_fem_alt1, terms = c("disp_fem", "altitude_m")))
+
+```
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_fledglings_fem_edi1 <- glmmTMB(num_fledglings ~ disp_fem + scale(edge_EDI) + (1|mother) + (1|study_year), 
+                              data = breeding_fem_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem_edi1)
+
+
+
+```
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_fledglings_fem_oaks1 <- glmmTMB(num_fledglings ~ disp_fem + scale(oaks) + (1|mother) + (1|study_year), 
+                              data = breeding_fem_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem_oaks1)
+
+
+
+```
+
+
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_fledglings_fem_pop1 <- glmmTMB(num_fledglings ~ disp_fem + scale(popularity_index) + (1|mother) + (1|study_year), 
+                              data = breeding_fem_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_fem_pop1)
+
+
+
+```
+
+
+## Number of recruits
+
+### No spatial effects
+
+
+```{r, echo = FALSE}
+imm_recruits_fem <- glmer(num_recruits ~ disp_fem + (1|study_year) + (1|mother), 
+                         data = filter(breeding_fem_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem)
+
+plot(predict_response(imm_recruits_fem, terms = c("disp_fem")))
+
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_recruits_fem_alt1 <- glmer(num_recruits ~ disp_fem + altitude_m + (1|study_year) + (1|mother), 
+                         data = filter(breeding_fem_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem_alt1)
+
+
+
+plot(predict_response(imm_recruits_fem_alt1, terms = c("disp_fem", "altitude_m")))
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_recruits_fem_edi1 <- glmer(num_recruits ~ disp_fem + edge_EDI + (1|study_year) + (1|mother), 
+                         data = filter(breeding_fem_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem_edi1)
+
+
+
+plot(predict_response(imm_recruits_fem_edi1, terms = c("disp_fem", "edge_EDI")))
+
+
+```
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_recruits_fem_oaks1 <- glmer(num_recruits ~ disp_fem + oaks + (1|study_year) + (1|mother), 
+                         data = filter(breeding_fem_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem_oaks1)
+
+
+plot(predict_response(imm_recruits_fem_oaks1, terms = c("disp_fem", "oaks")))
+
+
+```
+
+### Nestbox popularity
+
+```{r, echo = FALSE}
+imm_recruits_fem_pop1 <- glmer(num_recruits ~ disp_fem + popularity_index + (1|study_year) + (1|mother), 
+                         data = filter(breeding_fem_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_fem_pop1)
+
+
+plot(predict_response(imm_recruits_fem_pop1, terms = c("popularity_index", "disp_fem")))
+
+
+```
+
+
+<!-- ## TRYING TO MAKE A GRAPH -->
+
+
+<!-- ```{r lay date graph with emmeans, include = FALSE} -->
+<!-- #binding all results into a dataframe -->
+<!-- spatial_recruits_data <- rename(data.frame(emmeans(imm_recruits_fem, specs = "disp_fem", type = "response")), disp = disp_fem) %>% -->
+<!--   rbind(rename(data.frame(emmeans(imm_recruits_fem_alt1, specs = "disp_fem", type = "response")), disp = disp_fem))  %>% -->
+<!--   rbind(rename(data.frame(emmeans(imm_recruits_fem_edi1, specs = "disp_fem", type = "response")), disp = disp_fem))  %>% -->
+<!--   rbind(rename(data.frame(emmeans(imm_recruits_fem_oaks1, specs = "disp_fem", type = "response")), disp = disp_fem)) %>% -->
+<!--   rbind(rename(data.frame(emmeans(imm_recruits_fem_pop1, specs = "disp_fem", type = "response")), disp = disp_fem)) -->
+
+<!-- spatial_recruits_data$disp <- c("orig_disp", "orig_LB", "alt_disp", "alt_LB", "edi_disp", "edi_LB", -->
+<!--                                "oaks_disp", "oaks_LB", "pop_disp", "pop_LB") -->
+<!-- spatial_recruits_data <- rename(spatial_recruits_data, analysis_explanatory = disp) -->
+
+<!-- #changing rownames to a levelled factor so that the points plot in the right order in ggplot, instead of alphabetically -->
+<!-- spatial_recruits_data$analysis_explanatory <- factor(spatial_recruits_data$analysis_explanatory, -->
+<!--                                                      levels=unique(spatial_recruits_data$analysis_explanatory)) -->
+<!-- #adding a factor to plot by colour -->
+<!-- spatial_recruits_data$disp_colour <- as.factor(c("disp", "LB", "disp", "LB", "disp", "LB", "disp", "LB", "disp", "LB")) -->
+
+
+
+<!-- #making fancy axis labels to make it legible -->
+<!-- # axis_labs <- c(expression(Imm[F], LB[F], Imm[M], LB[M], Imm[F]+Imm[M], Imm[F]+LB[M], LB[F]+Imm[M], LB[F]+LB[M])) -->
+
+
+<!-- ggplot(data = spatial_recruits_data) + -->
+<!--   theme_classic() + -->
+<!--   theme(panel.grid.major.y = element_line(colour ="lightgrey"), -->
+<!--         axis.text.x = element_text(size = 7.6), -->
+<!--         plot.title = element_text(hjust = 0.5)) + -->
+<!--   geom_point(aes(x = analysis_explanatory, -->
+<!--                y = rate, -->
+<!--                colour = disp_colour), -->
+<!--            alpha = 0.5, size = 5) + -->
+<!--   geom_errorbar(aes(y = rate, x = analysis_explanatory, ymin = rate - SE, ymax = rate + SE, -->
+<!--                     width = 0.2, colour = disp_colour)) + -->
+<!--   # ylim(0, 1) + -->
+<!--   scale_fill_viridis_d() + -->
+<!--     labs(y = "Number of recruits", x = "Environmental variable", title = "Number of recruits") + -->
+<!--   scale_colour_manual("Dispersal status", -->
+<!--                     values = c("#440154FF", "#5DC863FF"), -->
+<!--                     labels = c("Dispersing", "Locally-born")) + -->
+<!--   # scale_x_discrete(labels = c("original", "altitude", "edge", "oaks", "pop"), -->
+<!--   #                  breaks = c("original", "altitude", "edge", "oaks", "pop"), drop = F) + -->
+<!--   annotate(geom = "line", -->
+<!--          x = c(0.8, 9.2), -->
+<!--          y = c(0.4821194, 0.4821194), -->
+<!--          colour = "#440154FF", alpha = 0.1, size = 5) + -->
+<!--   annotate(geom = "line", -->
+<!--          x = c(1.8, 10.2), -->
+<!--          y = c(0.5358745, 0.5358745), -->
+<!--          colour = "#5DC863FF", alpha = 0.1, size = 5) -->
+
+
+
+
+<!-- # ggplot(data = laydate_results_data_clean) + -->
+<!-- #   theme_classic() + -->
+<!-- #   theme(panel.grid.major.y = element_line(colour ="lightgrey"), -->
+<!-- #         axis.text.x = element_text(size = 7.6), -->
+<!-- #         plot.title = element_text(hjust = 0.5)) + -->
+<!-- #   geom_point(aes(x = analysis_explanatory, -->
+<!-- #                y = emmean, -->
+<!-- #                colour = disp_colour), -->
+<!-- #            alpha = 0.5, size = 5) + -->
+<!-- #   # geom_point(aes(y = back_minus_err, x = analysis_explanatory)) + -->
+<!-- #   # geom_point(aes(y = back_plus_err, x = analysis_explanatory)) + -->
+<!-- #   geom_errorbar(aes(y = emmean, x = analysis_explanatory, ymin = emmean - SE, ymax = emmean + SE, -->
+<!-- #                     width = 0.2, colour = analysis_explanatory)) + -->
+<!-- #   # ylim(0, 1) + -->
+<!-- #   scale_fill_viridis_d() + -->
+<!-- #     labs(y = "April lay date (1 = April 1st)", x = "Dispersal Status", title = "April lay date") + -->
+<!-- #   scale_x_discrete(label = axis_labs) + -->
+<!-- #   scale_colour_manual("Dispersal Status", -->
+<!-- #                     values = c("#440154FF", "#5DC863FF", "#440154FF", "#5DC863FF", "#440154FF", "#3B528BFF", "#21908CFF", "#5DC863FF"), -->
+<!-- #                     labels = axis_labs) + -->
+<!-- #   annotate(geom = "text", -->
+<!-- #            x = c(1.5,3.5,6.5), -->
+<!-- #            y = c(28.5, 28.5, 28.5), -->
+<!-- #            label = c("Females", "Males", "Parent Combination")) + -->
+<!-- #   annotate(geom = "line", -->
+<!-- #            x = c(0.7, 2.3), -->
+<!-- #            y = c(28.2, 28.2)) + -->
+<!-- #   annotate(geom = "line", -->
+<!-- #          x = c(2.7, 4.3), -->
+<!-- #          y = c(28.2, 28.2)) + -->
+<!-- #   annotate(geom = "line", -->
+<!-- #          x = c(4.7, 8.3), -->
+<!-- #          y = c(28.2, 28.2)) + -->
+<!-- #   annotate(geom = "text", -->
+<!-- #          x = c(1.5, 3.5, 6, 7, 8), -->
+<!-- #          y = c(27.8, 27.8, 27.8, 27.8, 27.8), -->
+<!-- #          label = c("***", "", "", "***", "***")) -->
+
+<!-- ``` -->
+

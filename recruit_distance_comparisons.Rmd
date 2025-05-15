@@ -1,0 +1,408 @@
+---
+title: "Recruit Distance Comparisons"
+output: html_document
+---
+
+Objective: 
+
+- calculate distance between natal box and 1st breeding box for all recruits (take known offspring from all breeding attempts) 
+- compare based on mother_disp, father_disp, and parent_disp
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r loading packages, include = FALSE}
+# loading packages
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("geosphere")
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+
+
+```
+
+
+```{r data, include = FALSE}
+
+breeding <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X) %>% 
+  mutate(pnum = toupper(pnum)) %>% 
+  mutate(pnum = trimws(pnum)) %>% 
+  mutate(mother = ifelse(mother == "", NA, mother)) %>% 
+  mutate(mother = toupper(mother)) %>% 
+  mutate(mother = trimws(mother)) %>% #sets blanks to NA, sets all ring numbers to upper case
+  mutate(father = ifelse(father == "", NA, father)) %>% 
+  mutate(father = toupper(father)) %>% 
+  mutate(father = trimws(father)) 
+
+
+breeding_full <- read.csv("Wytham GT BT 1960_2024 new.csv") %>% 
+  clean_names() %>% 
+  mutate(pnum = toupper(pnum)) %>% 
+  mutate(pnum = trimws(pnum)) %>% 
+  mutate(mother = ifelse(mother == "", NA, mother)) %>% 
+  mutate(mother = toupper(mother)) %>% 
+  mutate(mother = trimws(mother)) %>% #sets blanks to NA, sets all ring numbers to upper case
+  mutate(father = ifelse(father == "", NA, father)) %>% 
+  mutate(father = toupper(father)) %>% 
+  mutate(father = trimws(father)) 
+
+
+
+
+```
+
+<!-- Adding all the recruits code to recalc: need to do it based on the recruits from the dataset I'm interested in now? -->
+
+
+```{r ringing data, include = FALSE}
+#most updated dataset with correct ages
+ringing_keith <- read.csv("long_term_ringing_data_new.csv") %>% 
+  rename(bto_ring = ring)
+
+ringing_keith_clean <- ringing_keith %>% 
+  filter(species == "greti") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring)) %>% 
+  mutate(month = as.numeric(substr(date_time, 4,5)))
+table(ringing_keith_clean$month, ringing_keith_clean$age)
+
+#old dataset without missing pnums
+ringing_old <- read.csv("wythamGTBT_ringingdata_1960_2024.csv")
+
+ringing_old_clean <- ringing_old %>% 
+  filter(bto_species_code == "GRETI") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring)) %>% 
+  mutate(Pnum = toupper(Pnum),
+         Pnum = trimws(Pnum)) 
+
+
+#filtering updated dataset for only new recruits ringed at the nest
+
+ringing_keith_clean2 <- ringing_keith_clean %>% 
+  filter(age == "1") %>%
+  # filter(record_type == "Physical") %>%
+  filter(retrap %in% c("N", "New Capture")) %>%
+  filter(region %in% c("Wytham_Core", "WYT")) %>% 
+  filter(year > 1959) %>% 
+  filter(is.na(pit_tag_state) == TRUE)
+
+
+#filtering old dataset to retain just birds ringed at the nest, and the nest where they were ringed
+
+pnums <- ringing_old_clean %>%
+  filter(age <= 1) %>%
+  select(Pnum, bto_ring)
+
+
+#adding pnums to the updated dataset, to get a dataframe with chicks to be used for recruit calculations
+
+keithnestlingswithpnums <- left_join(ringing_keith_clean2, pnums, by = "bto_ring")
+
+
+# #oldest dataset that andrea gave me first
+# ringing_andrea <- read.csv("ebmp_database_ringing_record_export_GT&BT_all.csv")
+# ringing_andrea_clean <- ringing_andrea %>% 
+#   filter(bto_species_code == "GRETI") %>% 
+#   filter(age == "1")
+
+```
+
+
+```{r, include = FALSE}
+#chicks that were ringed at the nest: fledglings at day 15 in Wytham
+chicks <- keithnestlingswithpnums %>% 
+  filter(age == "1") %>% 
+  filter(species == "greti") %>% 
+  mutate(bto_ring = toupper(bto_ring),
+         bto_ring = trimws(bto_ring))  %>% 
+  mutate(Pnum = toupper(Pnum)) %>% 
+  mutate(Pnum = trimws(Pnum)) 
+
+
+
+```
+
+
+<!-- Now chicks are here, reference to copy their natal box to breeding attempts of each individual -->
+
+```{r female start, include = FALSE}
+breeding_fem <- breeding %>% 
+  filter(disp_fem == "locally-born") %>% #4845 locally-born females
+  group_by(mother) %>% 
+  slice_head(n =1) %>% 
+  ungroup()
+
+
+#joins natal pnums to breeding_fem based on mother
+breeding_fem_natal <- breeding_fem %>% 
+  left_join(select(chicks, bto_ring, Pnum), by = c("mother" = "bto_ring")) %>% 
+  rename(natal_pnum = Pnum)
+
+#adding natal_boxes
+breeding_fem_natal1 <- breeding_fem_natal %>% 
+  mutate(natal_box = str_sub(natal_pnum, start = 6)) %>% 
+  left_join(rename(select(breeding, pnum, mother, father, disp_fem, disp_male, parent_disp),
+                   mat_mother = mother, mat_father = father, disp_fem_mat = disp_fem, 
+                   disp_male_mat = disp_male, parent_disp_mat = parent_disp),
+                   by = c("natal_pnum" = "pnum"))
+
+  
+# filter(breeding_fem_natal1, is.na(natal_box))
+# 
+# 
+# filter(breeding_full, pnum %in%  filter(breeding_fem_natal1, is.na(natal_box))$natal_pnum)
+# 
+# unique(filter(breeding_fem_natal1, is.na(natal_box))$natal_pnum)
+# 
+# filter(breeding_fem_natal1, is.na(natal_box))
+# filter(ringing_keith, bto_ring == "TC58797")
+# filter(breeding_full, pnum == "20051W26")
+
+# for (i in filter(breeding_fem_natal1, is.na(natal_box))$mother) {
+#   test <- filter(ringing_old_clean, bto_ring == i)$Pnum
+#   breeding_fem_natal1$natal_pnum[breeding_fem_natal1$bto_ring == i] <- test
+# }
+
+```
+
+<!-- repeating to do both male and female recruits -->
+```{r, include = FALSE}
+
+breeding_recruits <- breeding %>% 
+  pivot_longer(cols = c("mother", "father"),
+                    names_to = "sex",
+                    values_to = "parent") %>% 
+  mutate(disp = case_when(sex == "mother" ~ disp_fem,
+                          sex == "father" ~ disp_male)) %>% 
+  mutate(sex = case_when(sex == "mother" ~ "female",
+                         sex == "father" ~ "male")) %>% 
+  filter(is.na(parent)== FALSE) %>% 
+  group_by(parent) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  filter(disp == "locally-born")
+
+breeding_recruits_natal <- breeding_recruits %>% 
+  left_join(select(chicks, bto_ring, Pnum), by = c("parent" = "bto_ring")) %>% 
+  rename(natal_pnum = Pnum)
+# filter(breeding_recruits_natal, is.na(natal_pnum) == T)
+
+#adding natal boxes
+breeding_recruits_natal1 <- breeding_recruits_natal %>% 
+  mutate(natal_box = str_sub(natal_pnum, start = 6)) %>% 
+  left_join(rename(select(breeding, pnum, mother, father, disp_fem, disp_male, parent_disp),
+                   disp_mother = disp_fem, 
+                   disp_father = disp_male, recruit_parent_disp = parent_disp),
+                   by = c("natal_pnum" = "pnum"))
+
+```
+
+<!-- Calculating distances  -->
+
+```{r distances, include = FALSE}
+#reading nestboxes data
+nestboxes_full <- read.csv("known_nestboxes_x_y.csv") %>% 
+  clean_names
+#needs cleaning to select only needed columns and sections + fix formatting issues
+nestboxes <- nestboxes_full %>% 
+  dplyr::select(nestbox, section, number, longitude, latitude) %>% 
+  filter(section %in% c("b", "c", "cp", "ex", "mp", "o", "sw", "w", "p")) 
+nestboxes$nestbox <- toupper(nestboxes$nestbox)
+#every name has a space :)
+nestboxes$nestbox <- str_replace_all(nestboxes$nestbox, " ", "")
+
+
+breeding_recruits_boxes <- breeding_recruits_natal1 %>% 
+  select(year, study_year, pnum, parent, sex, box, natal_pnum, natal_box, mother, father,
+         disp_mother, disp_father, recruit_parent_disp) %>% 
+  left_join(rename(select(nestboxes, nestbox, longitude, latitude), 
+                   box = nestbox, box_long = longitude, box_lat = latitude),  by = "box") %>% 
+  left_join(rename(select(nestboxes, nestbox, longitude, latitude), 
+                   natal_box = nestbox, natal_long = longitude, natal_lat = latitude), by = "natal_box") %>%
+  mutate(distance = distHaversine(p1 = matrix(c(box_long, box_lat), ncol=2), 
+                                  p2 = matrix(c(natal_long, natal_lat), ncol = 2)))
+
+
+ 
+breeding_fem_boxes <- breeding_fem_natal1 %>%
+  select(year, study_year, pnum, mother, box, natal_pnum, natal_box, disp_fem_mat, disp_male_mat, parent_disp_mat) %>%
+  left_join(rename(select(nestboxes, nestbox, longitude, latitude), 
+                   box = nestbox, box_long = longitude, box_lat = latitude),  by = "box") %>% 
+  left_join(rename(select(nestboxes, nestbox, longitude, latitude), 
+                   natal_box = nestbox, natal_long = longitude, natal_lat = latitude), by = "natal_box") %>%
+  mutate(distance = distHaversine(p1 = matrix(c(box_long, box_lat), ncol=2), 
+                                  p2 = matrix(c(natal_long, natal_lat), ncol = 2)))
+
+hist(breeding_fem_boxes$distance)
+
+```
+
+
+
+<!-- Now that I have distances and parental dispersal, can make models -->
+
+
+## Distance Models
+
+Aiming to test the difference in dispersal distance between recruits born to locally-born vs dispersing parents.
+
+Models use haversine distance between recruits' natal box and 1st breeding box (distance) as the response variable, with dispersal status as the explanatory variable. Different models either the mother's or father's dispersal status, or the parent combination. 
+
+I'm using all recruits and accounting for the effect of sex as a fixed effect to get a bigger total sample size -- 6237. Every model uses a smaller number because not all parents are known.
+
+
+```{r, echo = FALSE}
+hist(breeding_recruits_boxes$distance)
+
+ggplot(data = breeding_recruits_boxes) +
+  geom_histogram(aes(x = distance, fill = sex)) +
+  geom_vline(aes(colour = "red", xintercept = mean(filter(breeding_recruits_boxes, sex == "male" &is.na(distance)==F)$distance))) +
+  geom_vline(aes(colour = "blue", xintercept = mean(filter(breeding_recruits_boxes, sex == "female" &is.na(distance)==F)$distance))) 
+
+
+##TESTING THE MEAN DISTANCES: FEMALE 943M, MALE 686M
+# mean(filter(breeding_recruits_boxes, sex == "female" &is.na(distance)==F)$distance)
+# mean(filter(breeding_recruits_boxes, sex == "male" &is.na(distance)==F)$distance)
+
+
+```
+
+
+### Effect of a recruit's mother - gamma
+
+
+```{r, echo = FALSE}
+
+test_mother_distance_gamma <- glmer(distance ~ disp_mother*sex + (1|study_year) + (1|mother),
+                                  data = filter(breeding_recruits_boxes, distance > 0),
+                                  family = Gamma(link = "log"))
+
+summary(test_mother_distance_gamma)
+emmeans(test_mother_distance_gamma, specs = c("disp_mother", "sex"), type = "response")
+
+
+
+```
+
+
+### Tukey test for gamma
+
+```{r, echo = FALSE}
+pairs(
+  emmeans(test_mother_distance_gamma, specs = c("disp_mother", "sex")),
+  adjust = "tukey"
+)
+
+```
+
+
+
+### Effect of a recruit's father
+
+
+```{r, echo = FALSE}
+test_father_distance_gamma <- glmer(distance ~ disp_father*sex + (1|study_year) + (1|father),
+                                  data = filter(breeding_recruits_boxes, distance > 0),
+                                  family = Gamma(link = "log"))
+
+summary(test_father_distance_gamma)
+emmeans(test_father_distance_gamma, specs = c("disp_father", "sex"), type = "response")
+
+
+```
+
+
+### Tukey test for father effect
+
+```{r, echo = FALSE}
+pairs(
+  emmeans(test_father_distance_gamma, specs = c("disp_father", "sex")),
+  adjust = "tukey"
+)
+
+```
+
+
+
+### Effect of a recruit's parent combination
+
+
+```{r, echo = FALSE}
+
+breeding_recruits_boxes <- breeding_recruits_boxes %>% 
+  rename(rpar_disp = recruit_parent_disp)
+
+test_parent_distance_gamma <- glmer(distance ~ rpar_disp*sex + (1|study_year) + (1|mother) + (1|father),
+                             data = filter(breeding_recruits_boxes, distance > 0),
+                             family = Gamma(link = "log")) 
+summary(test_parent_distance_gamma)
+
+
+emmeans(test_parent_distance_gamma, specs = c("rpar_disp", "sex"), type = "response")
+
+```
+
+### Tukey test for parent combination effect
+
+
+```{r, echo = FALSE}
+pairs(
+  emmeans(test_parent_distance_gamma, specs = c("rpar_disp", "sex")),
+  adjust = "tukey"
+)
+
+plot(pairs(
+  emmeans(test_parent_distance_gamma, specs = c("rpar_disp", "sex")),
+  adjust = "tukey"
+))
+
+
+```
+
+
+
+
+<!-- ```{r} -->
+
+
+<!-- pairs( -->
+<!--   emmeans(test_mother_distance, specs = c("disp_mother", "sex")), -->
+<!--   adjust = "tukey" -->
+<!-- ) -->
+
+<!-- pairs( -->
+<!--   emmeans(test_father_distance, specs = c("disp_father", "sex")), -->
+<!--   adjust = "tukey" -->
+<!-- ) -->
+
+<!-- pairs( -->
+<!--   emmeans(test_parent_distance, specs = c("recruit_parent_disp", "sex")), -->
+<!--   adjust = "tukey" -->
+<!-- ) -->
+
+
+
+<!-- ``` -->

@@ -1,0 +1,648 @@
+---
+title: "Spatial Fitness Effects -- Males"
+output: html_document
+---
+
+Goal: produce fitness models relating each of the spatial characteristics of nestboxes to each fitness characteristic, to see if they change the effect of dispersal status on fitness when taken into account.
+
+Models for: 
+
+- altitude
+- edge distance
+- number of oak trees within 75m 
+- nestbox popularity index
+
+
+All models will use attempt level data only -- lifetime is going to be harder to deal with spatially because of moving around the woods. Could be interesting to see if fitness differs within individuals in different areas, but would have to control for age (attempt number)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+
+install_if_needed("geosphere")
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("datawizard")
+install_if_needed("lmerTest")
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for maleales before 2016
+breeding_male <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X)
+
+```
+
+
+```{r spatial data}
+#environmental conditions for every nestbox in wytham
+habitat <- read.csv("Nest_box_habitat_data.csv") %>% 
+  mutate(nb = trimws(nb)) %>% 
+  mutate(nb = toupper(nb))
+
+#number of oaks within 75m of every nestbox in wytham
+oaks <- read.csv("oaks_75m.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) %>% 
+  rename(oaks = no_trees_75m)
+  
+#reading nestboxes data
+nestboxes_full <- read.csv("known_nestboxes_x_y.csv") %>% 
+  clean_names
+#needs cleaning to select only needed columns and sections + fix formatting issues
+nestboxes <- nestboxes_full %>% 
+  dplyr::select(nestbox, section, number, longitude, latitude) %>% 
+  filter(section %in% c("b", "c", "cp", "ex", "mp", "o", "sw", "w", "p")) 
+nestboxes$nestbox <- toupper(nestboxes$nestbox)
+#every name has a space :)
+nestboxes$nestbox <- str_replace_all(nestboxes$nestbox, " ", "")
+
+wytham_line <- readRDS("wood.outline.rds") %>% 
+  st_transform(crs = 4326)
+
+elevation <- read.csv("Nestbox_elevations.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) 
+
+
+```
+
+```{r pop index start, echo = FALSE}
+nestboxes_edit <- nestboxes %>% 
+  mutate(count_nearby = 0)
+
+#for each box, find distance to all other boxes, and count <= 30m
+for (i in 1:nrow(nestboxes_edit)) {
+  #take coordinates for box of interest
+  box_coords <- c(nestboxes_edit$longitude[i], nestboxes_edit$latitude[i])
+ 
+  #calculate distances to all other boxes
+  distances <- distHaversine(matrix(c(nestboxes_edit$longitude, nestboxes_edit$latitude), ncol=2), box_coords)
+ 
+  #count within 30m -- correcting for self (distance always 0)
+  nestboxes_edit$count_nearby[i] <- sum(distances <= 30) - 1
+}
+
+```
+
+```{r calculating occupancy, echo = FALSE}
+used_boxes <- select(nestboxes, nestbox)
+for (i in 1:51) {
+  used_boxes <- used_boxes %>% 
+    mutate(year = case_when((nestbox %in% filter(breeding_male, year == 1964 + i)$box) ~ 1,
+                            !(nestbox %in% filter(breeding_male, year == 1964 + i)$box) ~ 0)) %>% 
+    rename_with(~as.character(1964 + i),
+                starts_with("year"))
+}
+
+used_boxes$occupancy <- 0
+
+for (x in used_boxes$nestbox) {
+  used_boxes$occupancy[used_boxes$nestbox == x] <- sum(used_boxes[used_boxes$nestbox == x, 2:52])
+}
+
+nestboxes_edit <- nestboxes_edit %>% 
+  left_join(select(used_boxes, nestbox, occupancy), by = "nestbox") 
+
+```
+
+
+```{r nestbox popularity index, echo = FALSE}
+popularity_model <- lm(occupancy ~ count_nearby, data = nestboxes_edit)
+summary(popularity_model)
+# residuals(popularity_model)
+plot(predict_response(popularity_model, terms = "count_nearby"))
+
+
+ggplot(data = nestboxes_edit) + 
+  geom_jitter(aes(x = count_nearby, y = occupancy)) + 
+  geom_smooth(aes(x = count_nearby, y = occupancy), method = "glm")
+##
+
+nestboxes_edit$popularity_index <- residuals(popularity_model)
+
+
+```
+
+
+
+```{r merging spatial data to breeding}
+breeding_male_habitat <- breeding_male %>% 
+  #adding altitude 
+  left_join(select(elevation, box, elevation), by = "box") %>%
+  rename(altitude_m = elevation) %>% 
+  #adding edge distance
+  left_join(select(habitat, nb, edge_EDI), by = c("box" = "nb")) %>%
+  #adding number of trees within 75m
+  left_join(oaks, by = "box") %>% 
+  #adding latitude/longitude
+  left_join(select(nestboxes, nestbox, longitude, latitude), by = c("box" = "nestbox")) %>% 
+  #adding pop index
+  left_join(select(nestboxes_edit, nestbox, occupancy, popularity_index), by = c("box" = "nestbox"))
+
+
+```
+
+
+## Lay date
+
+### No spatial effect
+
+```{r lay date}
+imm_laydate_male <- lmer(april_lay_date ~ disp_male + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_laydate_male)
+
+plot(predict_response(imm_laydate_male, terms = c("disp_male")))
+
+
+
+```
+
+
+### Altitude
+
+```{r lay date - altitude}
+imm_laydate_male_alt1 <- lmer(april_lay_date ~ disp_male + altitude_m + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_laydate_male_alt1)
+
+
+plot(predict_response(imm_laydate_male_alt1, terms = c("disp_male", "altitude_m")))
+
+
+# ggplot(data = breeding5) + 
+#   geom_histogram(aes(x = altitude_m))
+# hist(breeding_male_habitat$altitude_m)
+```
+
+
+
+
+### Edge distance index
+
+```{r lay date - edge}
+imm_laydate_male_edi1 <- lmer(april_lay_date ~ disp_male + edge_EDI + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_laydate_male_edi1)
+
+
+plot(predict_response(imm_laydate_male_edi1, terms = c("disp_male", "edge_EDI")))
+
+
+```
+
+
+
+### Number of oaks
+
+```{r lay date - oaks}
+imm_laydate_male_oaks1 <- lmer(april_lay_date ~ disp_male + oaks + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_laydate_male_oaks1)
+
+
+plot(predict_response(imm_laydate_male_oaks1, terms = c("disp_male", "oaks")))
+
+```
+
+
+
+### Nestbox popularity
+
+```{r lay date - pop}
+imm_laydate_male_pop1 <- lmer(april_lay_date ~ disp_male + popularity_index + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_laydate_male_pop1)
+
+
+plot(predict_response(imm_laydate_male_pop1, terms = c("disp_male", "popularity_index")))
+
+```
+
+
+
+## Hatch date
+
+### No spatial effect
+
+```{r hatch date }
+imm_hatchdate_male1 <- lmer(april_hatch_date ~ disp_male + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_hatchdate_male1)
+
+
+plot(predict_response(imm_hatchdate_male1, terms = c("disp_male")))
+
+
+```
+
+
+### Altitude 
+
+```{r hatch date - altitude}
+imm_hatchdate_male_alt1 <- lmer(april_hatch_date ~ disp_male + altitude_m +  (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_hatchdate_male_alt1)
+
+plot(predict_response(imm_hatchdate_male_alt1, terms = c("disp_male", "altitude_m")))
+
+
+```
+
+### Edge distance index
+
+```{r hatch date - edi}
+imm_hatchdate_male_edi1 <- lmer(april_hatch_date ~ disp_male + edge_EDI +  (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_hatchdate_male_edi1)
+
+plot(predict_response(imm_hatchdate_male_edi1, terms = c("disp_male", "edge_EDI")))
+
+
+```
+
+
+### Number of oaks
+
+```{r hatch date - oaks}
+imm_hatchdate_male_oaks1 <- lmer(april_hatch_date ~ disp_male + oaks +  (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_hatchdate_male_oaks1)
+
+plot(predict_response(imm_hatchdate_male_oaks1, terms = c("disp_male", "oaks")))
+
+
+```
+
+### Nestbox popularity index
+
+```{r hatch data - pop}
+imm_hatchdate_male_pop1 <- lmer(april_hatch_date ~ disp_male + popularity_index +  (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_hatchdate_male_pop1)
+
+
+plot(predict_response(imm_hatchdate_male_pop1, terms = c("disp_male", "popularity_index")))
+
+
+```
+
+
+## Clutch size
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_clutchsize_male <- glmer(clutch_size ~ disp_male + (1|study_year) + (1|father), 
+                           data = breeding_male_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_male)
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_clutchsize_male_alt1 <- glmer(clutch_size ~ disp_male + altitude_m + (1|study_year) + (1|father), 
+                           data = breeding_male_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_male_alt1)
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_clutchsize_male_edi1 <- glmer(clutch_size ~ disp_male + edge_EDI + (1|study_year) + (1|father), 
+                           data = breeding_male_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_male_edi1)
+
+
+```
+
+
+### Number of oaks
+
+```{r, echo = FALSE}
+imm_clutchsize_male_oaks1 <- glmer(clutch_size ~ disp_male + oaks + (1|study_year) + (1|father), 
+                           data = breeding_male_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_male_oaks1)
+
+
+```
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_clutchsize_male_pop1 <- glmer(clutch_size ~ disp_male + popularity_index + (1|study_year) + (1|father), 
+                           data = breeding_male_habitat,
+                           family = "poisson")
+summary(imm_clutchsize_male_pop1)
+
+```
+
+
+## Mean egg weight
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_eggweight_male <- lmer(mean_egg_weight ~ disp_male + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_eggweight_male)
+
+plot(predict_response(imm_eggweight_male, terms = "disp_male"))
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_eggweight_male_alt1 <- lmer(mean_egg_weight ~ disp_male + altitude_m + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_eggweight_male_alt1)
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_eggweight_male_edi1 <- lmer(mean_egg_weight ~ disp_male + edge_EDI + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_eggweight_male_edi1)
+
+
+```
+
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_eggweight_male_oaks1 <- lmer(mean_egg_weight ~ disp_male + oaks + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_eggweight_male_oaks1)
+
+```
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_eggweight_male_pop1 <- lmer(mean_egg_weight ~ disp_male + popularity_index + (1|study_year) + (1|father), 
+                          data = breeding_male_habitat)
+summary(imm_eggweight_male_pop1)
+
+
+```
+
+
+## Proportion of eggs fledged
+
+```{r, echo = FALSE}
+imm_fledged_male <- glmer(prop_fledged ~ disp_male + (1|study_year) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding_male_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_male)
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_fledged_male_alt1 <- glmer(prop_fledged ~ disp_male + altitude_m + (1|study_year) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding_male_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_male_alt1)
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_fledged_male_edi1 <- glmer(prop_fledged ~ disp_male + edge_EDI + (1|study_year) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding_male_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_male_edi1)
+
+
+```
+
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_fledged_male_oaks1 <- glmer(prop_fledged ~ disp_male + oaks + (1|study_year) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding_male_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_male_oaks1)
+
+
+```
+
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_fledged_male_pop1 <- glmer(prop_fledged ~ disp_male + popularity_index + (1|study_year) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding_male_habitat,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_male_pop1)
+
+
+
+```
+
+
+## Number of fledglings
+
+### No spatial effect
+
+```{r, echo = FALSE}
+imm_fledglings_male <- glmmTMB(num_fledglings ~ disp_male + (1|father) + (1|study_year), 
+                              data = breeding_male_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_male)
+
+
+plot(predict_response(imm_fledglings_male, terms = c("disp_male")))
+
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_fledglings_male_alt1 <- glmmTMB(num_fledglings ~ disp_male + scale(altitude_m) + (1|father) + (1|study_year), 
+                              data = breeding_male_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_male_alt1)
+
+plot(predict_response(imm_fledglings_male_alt1, terms = c("disp_male", "altitude_m")))
+
+```
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_fledglings_male_edi1 <- glmmTMB(num_fledglings ~ disp_male + scale(edge_EDI) + (1|father) + (1|study_year), 
+                              data = breeding_male_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_male_edi1)
+
+
+
+
+```
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_fledglings_male_oaks1 <- glmmTMB(num_fledglings ~ disp_male + scale(oaks) + (1|father) + (1|study_year), 
+                              data = breeding_male_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_male_oaks1)
+
+
+
+```
+
+
+
+### Nestbox popularity index
+
+```{r, echo = FALSE}
+imm_fledglings_male_pop1 <- glmmTMB(num_fledglings ~ disp_male + scale(popularity_index) + (1|father) + (1|study_year), 
+                              data = breeding_male_habitat,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_male_pop1)
+
+
+
+```
+
+
+## Number of recruits
+
+### No spatial effects
+
+
+```{r, echo = FALSE}
+imm_recruits_male <- glmer(num_recruits ~ disp_male + (1|study_year) + (1|father), 
+                         data = filter(breeding_male_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_male)
+
+plot(predict_response(imm_recruits_male, terms = c("disp_male")))
+
+
+```
+
+
+### Altitude
+
+```{r, echo = FALSE}
+imm_recruits_male_alt1 <- glmer(num_recruits ~ disp_male + altitude_m + (1|study_year) + (1|father), 
+                         data = filter(breeding_male_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_male_alt1)
+
+
+plot(predict_response(imm_recruits_male_alt1, terms = c("disp_male", "altitude_m")))
+
+
+```
+
+
+### Edge distance index
+
+```{r, echo = FALSE}
+imm_recruits_male_edi1 <- glmer(num_recruits ~ disp_male + edge_EDI + (1|study_year) + (1|father), 
+                         data = filter(breeding_male_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_male_edi1)
+
+
+
+plot(predict_response(imm_recruits_male_edi1, terms = c("disp_male", "edge_EDI")))
+
+
+```
+
+### Number of oaks within 75m
+
+```{r, echo = FALSE}
+imm_recruits_male_oaks1 <- glmer(num_recruits ~ disp_male + oaks + (1|study_year) + (1|father), 
+                         data = filter(breeding_male_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_male_oaks1)
+
+
+plot(predict_response(imm_recruits_male_oaks1, terms = c("disp_male", "oaks")))
+
+
+```
+
+### Nestbox popularity
+
+```{r, echo = FALSE}
+imm_recruits_male_pop1 <- glmer(num_recruits ~ disp_male + popularity_index + (1|study_year) + (1|father), 
+                         data = filter(breeding_male_habitat, year < 2016),
+                         family = poisson(link = "log"))
+summary(imm_recruits_male_pop1)
+
+
+
+plot(predict_response(imm_recruits_male_pop1, terms = c("disp_male", "popularity_index")))
+
+
+
+```
+
+

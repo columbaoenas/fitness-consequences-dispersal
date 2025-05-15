@@ -1,0 +1,174 @@
+---
+title: "updated_fitness_pairs"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for females before 2016
+breeding <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X) 
+
+
+```
+
+
+
+
+### Breeding attempt traits -- effect of mothers' dispersal status
+
+#### Lay date
+```{r, echo = FALSE}
+imm_laydate_par <- lmer(april_lay_date ~ parent_disp + (1|study_year) + (1|box)  + (1|mother) + (1|father), 
+                        data = breeding)
+summary(imm_laydate_par)
+
+emmeans(imm_laydate_par, specs = "parent_disp", type = "response")
+
+pairs(emmeans(imm_laydate_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+
+```
+
+
+
+#### Hatch date
+
+```{r, echo = FALSE}
+imm_hatchdate_par <- lmer(april_hatch_date ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                          data = breeding)
+summary(imm_hatchdate_par)
+
+emmeans(imm_hatchdate_par, specs = "parent_disp", type = "response")
+
+pairs(emmeans(imm_hatchdate_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+
+```
+
+
+
+#### Clutch size
+
+```{r, echo = FALSE}
+imm_clutchsize_par <- glmer(clutch_size ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                           data = breeding, 
+                           family = "poisson")
+summary(imm_clutchsize_par)
+
+emmeans(imm_clutchsize_par, specs = "parent_disp", type = "response")
+
+pairs(emmeans(imm_clutchsize_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+
+```
+
+
+
+#### Mean egg weight
+
+```{r, echo = FALSE}
+imm_eggweight_par <- lmer(mean_egg_weight ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                          data = breeding)
+summary(imm_eggweight_par)
+## Warning: Model failed to converge with max|grad| = 0.0027882 (tol = 0.002, component 1)
+
+emmeans(imm_eggweight_par, specs = "parent_disp", type = "response")
+
+
+pairs(emmeans(imm_eggweight_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+
+
+```
+
+
+
+#### Proportion of eggs fledged
+
+```{r, echo = FALSE}
+imm_fledged_par <- glmer(prop_fledged ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                         weights = clutch_size,
+                         data = breeding,
+                         family = binomial(link = "logit"))
+summary(imm_fledged_par)
+
+emmeans(imm_fledged_par, specs = "parent_disp", type = "response")
+
+
+pairs(emmeans(imm_fledged_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+```
+
+
+
+#### Number of fledglings
+
+```{r, echo = FALSE}
+imm_fledglings_par <- glmmTMB(num_fledglings ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                              data = breeding,
+                              ziformula = ~.,
+                              family = "poisson")
+summary(imm_fledglings_par)
+
+emmeans(imm_fledglings_par, specs = "parent_disp", type = "response")
+
+pairs(emmeans(imm_fledglings_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+```
+
+
+
+
+#### Number of recruits
+
+```{r, echo = FALSE}
+imm_recruits_par <- glmer(num_recruits ~ parent_disp + (1|study_year) + (1|box) + (1|mother) + (1|father), 
+                         data = breeding,
+                         family = poisson(link = "log"))
+summary(imm_recruits_par)
+
+emmeans(imm_recruits_par, specs = "parent_disp", type = "response")
+
+
+pairs(emmeans(imm_recruits_par, specs = "parent_disp"),
+      adjust = "tukey")
+
+
+```

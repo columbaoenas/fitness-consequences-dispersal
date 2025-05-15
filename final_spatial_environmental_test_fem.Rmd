@@ -1,0 +1,320 @@
+---
+title: "Spatial/Environmental Tests"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+<!-- Goal:  -->
+<!-- Test for differences in spatial vars (altitude, edge distance) between imm/res, and effects on fitness. THEN combination. Models initially testing effect on fitness, and then on the proportion of immigrants in that nestbox? -->
+<!-- If add eg altitude to regular models before as a fixed effect, should in theory separate the effect of differing altitude: if we see the effect diminish, caused by environmentally distinct habitats? -->
+
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("geosphere")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for females before 2016
+breeding_fem <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  dplyr::select(everything(), -X)
+
+#environmental conditions for every nestbox in wytham
+habitat <- read.csv("Nest_box_habitat_data.csv") %>% 
+  mutate(nb = trimws(nb)) %>% 
+  mutate(nb = toupper(nb)) 
+
+#number of oaks within 75m of every nestbox in wytham
+oaks <- read.csv("oaks_75m.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) %>% 
+  rename(oaks = no_trees_75m)
+  
+
+#reading nestboxes data
+nestboxes_full <- read.csv("known_nestboxes_x_y.csv") %>% 
+  clean_names
+#needs cleaning to select only needed columns and sections + fix formatting issues
+nestboxes <- nestboxes_full %>% 
+  dplyr::select(nestbox, section, number, longitude, latitude) %>% 
+  filter(section %in% c("b", "c", "cp", "ex", "mp", "o", "sw", "w", "p")) 
+nestboxes$nestbox <- toupper(nestboxes$nestbox)
+#every name has a space :)
+nestboxes$nestbox <- str_replace_all(nestboxes$nestbox, " ", "")
+#adding box type from habitat data: gtit/btit
+nestboxes <- nestboxes %>% 
+  left_join(select(habitat, nb, type), by = c("nestbox" = "nb")) %>% 
+  filter(type == "G")
+
+elevation <- read.csv("Nestbox_elevations.csv") %>% 
+  clean_names() %>% 
+  mutate(box = trimws(box)) %>% 
+  mutate(box = toupper(box)) 
+
+
+breeding_fem_habitat <- breeding_fem %>% 
+  #adding altitude 
+  left_join(select(elevation, box, elevation), by = "box") %>%
+  rename(altitude_m = elevation) %>% 
+  #adding edge distance
+  left_join(select(habitat, nb, edge_EDI), by = c("box" = "nb")) %>%
+  #adding number of trees within 75m
+  left_join(oaks, by = "box") %>% 
+  #adding latitude/longitude
+  left_join(select(nestboxes, nestbox, longitude, latitude), by = c("box" = "nestbox"))
+
+
+wytham_line <- readRDS("wood.outline.rds") %>% 
+  st_transform(crs = 4326)
+
+
+```
+
+
+## Calculating nestbox popularity index
+
+### Nestbox density: number of boxes within 30m
+
+```{r, echo = FALSE}
+nestboxes_edit <- nestboxes %>% 
+  mutate(count_nearby = 0)
+
+#for each box, find distance to all other boxes, and count <= 30m
+for (i in 1:nrow(nestboxes_edit)) {
+  #take coordinates for box of interest
+  box_coords <- c(nestboxes_edit$longitude[i], nestboxes_edit$latitude[i])
+ 
+  #calculate distances to all other boxes
+  distances <- distHaversine(matrix(c(nestboxes_edit$longitude, nestboxes_edit$latitude), ncol=2), box_coords)
+ 
+  #count within 30m -- correcting for self (distance always 0)
+  nestboxes_edit$count_nearby[i] <- sum(distances <= 30) - 1
+}
+
+#graph of heatmap for nestbox density
+ggplot() + 
+  geom_sf(data = wytham_line) + 
+  geom_point(data = filter(nestboxes_edit), aes(x = longitude, y = latitude, colour = count_nearby)) +
+  scale_colour_viridis_c(option = "turbo") + 
+  geom_point(aes(x = nestboxes_edit$longitude[nestboxes_edit$nestbox=="C114"], y = nestboxes_edit$latitude[nestboxes_edit$nestbox=="C137"]))
+
+
+```
+
+
+
+```{r calculating occupancy, echo = FALSE}
+used_boxes <- select(nestboxes, nestbox)
+for (i in 1:51) {
+  used_boxes <- used_boxes %>% 
+    mutate(year = case_when((nestbox %in% filter(breeding_fem, year == 1964 + i)$box) ~ 1,
+                            !(nestbox %in% filter(breeding_fem, year == 1964 + i)$box) ~ 0)) %>% 
+    rename_with(~as.character(1964 + i),
+                starts_with("year"))
+}
+
+used_boxes$occupancy <- 0
+
+for (x in used_boxes$nestbox) {
+  used_boxes$occupancy[used_boxes$nestbox == x] <- sum(used_boxes[used_boxes$nestbox == x, 2:52])
+}
+
+nestboxes_edit <- nestboxes_edit %>% 
+  left_join(select(used_boxes, nestbox, occupancy), by = "nestbox") 
+
+```
+
+### Popularity model: occupancy ~ number of boxes within 30m
+
+```{r nestbox popularity index, echo = FALSE}
+popularity_model <- lm(occupancy ~ count_nearby, data = nestboxes_edit)
+summary(popularity_model)
+# residuals(popularity_model)
+plot(predict_response(popularity_model, terms = "count_nearby"))
+
+
+ggplot(data = nestboxes_edit) + 
+  geom_jitter(aes(x = count_nearby, y = occupancy)) + 
+  geom_smooth(aes(x = count_nearby, y = occupancy), method = "glm")
+##
+
+nestboxes_edit$popularity_index <- residuals(popularity_model)
+# nestboxes_edit <- filter(nestboxes_edit, occupancy > 0)
+
+
+breeding_fem_habitat <- breeding_fem_habitat %>% 
+  left_join(select(nestboxes_edit, nestbox, occupancy, popularity_index), by = c("box" = "nestbox"))
+
+
+```
+
+
+
+## Popularity Index ~ dispersal status
+
+```{r, echo = FALSE}
+test_pop_imm <-  lmer(popularity_index ~ disp_fem + (1|mother) + (1|study_year), 
+                           data = breeding_fem_habitat)
+summary(test_pop_imm)
+plot(predict_response(test_pop_imm, terms = "disp_fem"))
+hist(residuals(test_pop_imm), breaks = 300)
+
+```
+
+
+
+
+## Altitude
+
+
+```{r altitude, echo = FALSE}
+
+test_altitude_imm <- lmer(altitude_m ~disp_fem + (1|mother) + (1|study_year), 
+                           data = breeding_fem_habitat)
+summary(test_altitude_imm)
+
+plot(predict_response(test_altitude_imm, terms = c("disp_fem")))
+
+hist(residuals(test_altitude_imm), breaks =300)
+```
+
+
+
+```{r, echo = FALSE}
+#graph of altitude counts separated by disp_fem
+altitude_hist <- ggplot(breeding_fem_habitat) + 
+  geom_histogram(aes(x = altitude_m, fill = disp_fem)) + 
+  theme(legend.position = "none") 
+
+#proportion at each altitude of disp_fem
+altitude_hist_fill <- ggplot(breeding_fem_habitat) + 
+  geom_histogram(aes(x = altitude_m, fill = disp_fem), position = "fill") + 
+  geom_hline(yintercept = 0.5)
+
+
+plot_grid(altitude_hist, altitude_hist_fill, align = "v", ncol = 1)
+
+
+```
+
+## Edge distance
+
+
+Model: EDI ~ disp_fem + (1|study_year) + (1|mother)
+
+
+```{r edge distance, echo = FALSE}
+test_edge_imm <- lmer(edge_EDI ~ disp_fem + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat)
+summary(test_edge_imm)
+
+plot(predict_response(test_edge_imm, terms = "disp_fem"))
+
+hist(residuals(test_edge_imm), breaks = 300)
+
+
+test_edge_imm_sqrt <- lmer(sqrt(edge_EDI) ~ disp_fem + (1|study_year) + (1|mother), 
+                           data = breeding_fem_habitat)
+summary(test_edge_imm_sqrt)
+
+
+
+hist(residuals(test_edge_imm_sqrt), breaks = 300)
+
+
+```
+
+
+
+
+```{r edge distance graphs, echo = FALSE}
+
+edge_hist <- ggplot(breeding_fem_habitat) +
+  geom_histogram(aes(x = edge_EDI, fill = disp_fem)) 
+
+
+edge_hist_fill <- ggplot(breeding_fem_habitat) +
+  geom_histogram(aes(x = edge_EDI, fill = disp_fem), position = "fill") + 
+  geom_hline(yintercept = 0.5)
+
+plot_grid(edge_hist, edge_hist_fill, align = "v", ncol = 1)
+
+```
+
+
+
+## Number of oaks within 75m
+
+```{r oaks graphs, echo = FALSE}
+oaks_hist <- ggplot(breeding_fem_habitat) +
+  geom_histogram(aes(x = oaks, fill = disp_fem), bins = 150) 
+
+
+oaks_hist_fill <- ggplot(breeding_fem_habitat) +
+  geom_histogram(aes(x = oaks, fill = disp_fem), position = "fill", bins = 150) + 
+  geom_hline(yintercept = 0.5)
+
+plot_grid(oaks_hist, oaks_hist_fill, align = "v", ncol = 1)
+
+
+```
+
+
+### As normal
+
+```{r oaks normal, echo = FALSE}
+test_oaks_imm_norm <-  lmer(oaks ~ disp_fem + (1|mother) + (1|study_year), 
+                           data = breeding_fem_habitat)
+summary(test_oaks_imm_norm)
+
+hist(residuals(test_oaks_imm_norm))
+
+plot(predict_response(test_oaks_imm_norm, terms = "disp_fem"))
+
+```
+
+
+
+
+### As poisson
+
+```{r oaks poisson, echo = FALSE}
+test_oaks_imm_pois <-  glmer(oaks ~ disp_fem + (1|mother) + (1|study_year), 
+                           data = breeding_fem_habitat,
+                           family = "poisson")
+summary(test_oaks_imm_pois)
+
+hist(residuals(test_oaks_imm_pois))
+
+plot(predict_response(test_oaks_imm_pois, terms = "disp_fem"))
+
+```
+

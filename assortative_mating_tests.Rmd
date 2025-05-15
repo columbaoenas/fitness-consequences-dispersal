@@ -1,0 +1,60 @@
+---
+title: "assortative mating tests"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+install_if_needed("rcompanion")
+
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for females before 2016
+breeding <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X) 
+
+```
+
+
+```{r}
+table(breeding$disp_fem, breeding$disp_male)
+
+test_data <- breeding %>% 
+  filter(is.na(disp_fem) == F) %>% 
+  filter(is.na(disp_male) == F) %>% 
+  select(disp_fem, disp_male) 
+test_counts <- table(test_data$disp_fem, test_data$disp_male)
+
+chisq.test(test_counts)
+cramerV(test_counts, ci =T, conf = 0.95)
+
+
+```

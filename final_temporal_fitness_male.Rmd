@@ -1,0 +1,360 @@
+---
+title: "temporal fitness males"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loading packages, echo = FALSE, include = FALSE}
+# Function to check and install packages
+install_if_needed <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)  # Load the package
+}
+
+# Check and install/load required libraries
+install_if_needed("dplyr")
+install_if_needed("tidyr")
+install_if_needed("ggplot2")
+install_if_needed("cowplot")
+install_if_needed("sf")
+install_if_needed("stringr")
+install_if_needed("tidyverse")
+install_if_needed("lme4")
+install_if_needed("glmmTMB")
+install_if_needed("janitor")
+install_if_needed("ggeffects")
+install_if_needed("lmerTest")
+install_if_needed("emmeans")
+
+```
+
+
+```{r reading data, echo = FALSE, include = FALSE}
+#using data for maleales before 2016
+breeding_male <- read.csv("breeding_both_cutoff_final.csv") %>% 
+  select(everything(), -X) 
+
+lifetime_male <- read.csv("lifetime_both_final.csv") %>% 
+  select(everything(), -X) %>% 
+  filter(sex == "F")
+
+```
+
+
+## Testing if effects dissipate over time
+
+```{r adding attempt number to breeding_male}
+breeding_time <- breeding_male %>% 
+  group_by(father) %>% 
+  mutate(att_num_male = seq_along(father)) %>% 
+  ungroup() %>% 
+  mutate(att_num_male = case_when(is.na(father) == T ~ NA,
+                                 is.na(father) == F ~ att_num_male)) %>% 
+  mutate(att_num_male_bin = case_when(att_num_male == 1 ~ att_num_male,
+                                     att_num_male > 1 ~ 2)) %>% 
+  mutate(att_num_male = as.factor(att_num_male),
+         att_num_male_bin = as.factor(att_num_male_bin)) %>% 
+    group_by(father) %>% 
+  mutate(att_num_male = seq_along(father)) %>% 
+  ungroup() %>% 
+  mutate(att_num_male = case_when(is.na(father) == T ~ NA,
+                                  is.na(father) == F ~ att_num_male)) %>% 
+  mutate(att_num_male_bin = case_when(att_num_male == 1 ~ att_num_male,
+                                     att_num_male > 1 ~ 2)) %>% 
+  mutate(att_num_male = as.factor(att_num_male),
+         att_num_male_bin = as.factor(att_num_male_bin))
+
+filter(breeding_time, father == "BA64007")
+
+
+###NUMBERS ARE SLIGHTLY OFF, PLS FIX LATER
+
+filter(breeding_time, is.na(att_num_male))
+
+```
+
+## Models
+
+## Lay date
+
+### Interaction
+```{r, echo = FALSE}
+imm_laydate_male_time_bin <- lmer(april_lay_date ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_laydate_male_time_bin)
+
+emmeans(imm_laydate_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_laydate_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_laydate_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+### No interaction
+```{r, echo = FALSE}
+
+
+imm_laydate_male_time_bin2 <- lmer(april_lay_date ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_laydate_male_time_bin2)
+
+emmeans(imm_laydate_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_laydate_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_laydate_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+## Hatch date
+
+### Interaction
+```{r, echo = FALSE}
+imm_hatchdate_male_time_bin <- lmer(april_hatch_date ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_hatchdate_male_time_bin)
+
+emmeans(imm_hatchdate_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_hatchdate_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_hatchdate_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+### No interaction
+```{r, echo = FALSE}
+imm_hatchdate_male_time_bin2 <- lmer(april_hatch_date ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_hatchdate_male_time_bin2)
+
+emmeans(imm_hatchdate_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_hatchdate_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_hatchdate_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+
+## Clutch size
+
+### Interaction
+```{r, echo = FALSE}
+imm_clutchsize_male_time_bin <- glmer(clutch_size ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                data = filter(breeding_time, is.na(father) == F),
+                                family = "poisson")
+summary(imm_clutchsize_male_time_bin)
+
+emmeans(imm_clutchsize_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_clutchsize_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_clutchsize_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+### No interaction
+```{r, echo = FALSE}
+imm_clutchsize_male_time_bin2 <- glmer(clutch_size ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                 data = filter(breeding_time, is.na(father) == F),
+                                 family = "poisson")
+summary(imm_clutchsize_male_time_bin2)
+
+emmeans(imm_clutchsize_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_clutchsize_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_clutchsize_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+
+## Mean egg weight
+
+### Interaction
+```{r, echo = FALSE}
+imm_eggweight_male_time_bin <- lmer(mean_egg_weight ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_eggweight_male_time_bin)
+
+emmeans(imm_eggweight_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_eggweight_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_eggweight_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+### No interaction
+```{r, echo = FALSE}
+imm_eggweight_male_time_bin2 <- lmer(mean_egg_weight ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F))
+summary(imm_eggweight_male_time_bin2)
+
+emmeans(imm_eggweight_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_eggweight_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_eggweight_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+
+## Prop fledged
+
+### Interaction
+```{r, echo = FALSE}
+imm_fledged_male_time_bin <- glmer(prop_fledged ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                    weights = clutch_size,
+                                    data = filter(breeding_time, is.na(father) == F),
+                                    family = binomial(link = "logit"))
+summary(imm_fledged_male_time_bin)
+
+emmeans(imm_fledged_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_fledged_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_fledged_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+
+```
+
+
+### No interaction
+```{r, echo = FALSE}
+imm_fledged_male_time_bin2 <- glmer(prop_fledged ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                    weights = clutch_size,
+                                    data = filter(breeding_time, is.na(father) == F),
+                                    family = binomial(link = "logit"))
+summary(imm_fledged_male_time_bin2)
+
+emmeans(imm_fledged_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_fledged_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_fledged_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+
+## Number of fledglings
+
+### Interaction
+```{r, echo = FALSE}
+imm_fledglings_male_time_bin <- glmmTMB(num_fledglings ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                    data = breeding_time,
+                                    ziformula = ~.,
+                                    family = "poisson")
+
+
+summary(imm_fledglings_male_time_bin)
+
+emmeans(imm_fledglings_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_fledglings_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_fledglings_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+
+```
+
+
+### No interaction
+```{r, echo = FALSE}
+imm_fledglings_male_time_bin2 <- glmmTMB(num_fledglings ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                                    data = breeding_time,
+                                    ziformula = ~.,
+                                    family = "poisson")
+summary(imm_fledglings_male_time_bin2)
+
+emmeans(imm_fledglings_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_fledglings_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_fledglings_male_time_bin2, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+
+
+
+## Number of recruits
+
+### Interaction
+```{r, echo = FALSE}
+imm_recruits_male_time_bin <- glmer(num_recruits ~ disp_male*att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F),
+                         family = poisson)
+summary(imm_recruits_male_time_bin)
+
+emmeans(imm_recruits_male_time_bin, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+pairs(
+  emmeans(imm_recruits_male_time_bin, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+
+plot(predict_response(imm_recruits_male_time_bin, terms = c("disp_male", "att_num_male_bin")))
+
+```
+
+### No interaction
+```{r, echo = FALSE}
+
+
+imm_recruits_male_time_bin2 <- glmer(num_recruits ~ disp_male + att_num_male_bin + (1|study_year) + (1|box) + (1|father), 
+                         data = filter(breeding_time, is.na(father) == F),
+                         family = poisson)
+summary(imm_recruits_male_time_bin2)
+pairs(
+  emmeans(imm_recruits_male_time_bin2, specs = c("disp_male", "att_num_male_bin")),
+  adjust = "tukey"
+)
+  emmeans(imm_recruits_male_time_bin2, specs = c("disp_male", "att_num_male_bin"), type = "response")
+
+```
+
+
